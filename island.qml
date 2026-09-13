@@ -403,6 +403,14 @@ ShellRoot {
 
             property bool hovered: false
             readonly property bool expanded: hovered || root.announcing
+            // Hover is exclusive: a hoverEnabled MouseArea sits above the
+            // hitbox's and the hitbox is told the pointer LEFT, which collapsed
+            // the panel out from under whatever you were reaching for. So every
+            // control that wants hover of its own holds the surface open itself
+            // rather than relying on the hitbox underneath it.
+            function hold()    { collapseTimer.stop(); win.hovered = true; }
+            function release() { collapseTimer.restart(); }
+
             // The count is what the announce clock watches; a monitor unplugged
             // mid-hover would otherwise leave it stuck above zero forever.
             onHoveredChanged: root.hoverCount += hovered ? 1 : -1
@@ -465,8 +473,8 @@ ShellRoot {
                     anchors.fill: parent
                     hoverEnabled: true
                     acceptedButtons: Qt.NoButton
-                    onEntered: { collapseTimer.stop(); win.hovered = true; }
-                    onExited:  collapseTimer.restart()
+                    onEntered: win.hold()
+                    onExited:  win.release()
                 }
             }
 
@@ -1058,6 +1066,8 @@ ShellRoot {
                                                     hoverEnabled: true
                                                     cursorShape: Qt.PointingHandCursor
                                                     enabled: row.decided === ""
+                                                    onEntered: win.hold()
+                                                    onExited:  win.release()
                                                     onClicked: {
                                                         row.decided = modelData.answer;
                                                         root.decide(pend.id, modelData.answer, why.text);
@@ -1141,6 +1151,8 @@ ShellRoot {
                                 anchors { fill: parent; margins: -6 }
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
+                                onEntered: win.hold()
+                                onExited:  win.release()
                                 onClicked: root.settingsOpen = true
                             }
                         }
