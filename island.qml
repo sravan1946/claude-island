@@ -404,12 +404,26 @@ ShellRoot {
             property bool hovered: false
             readonly property bool expanded: hovered || root.announcing
             // Hover is exclusive: a hoverEnabled MouseArea sits above the
-            // hitbox's and the hitbox is told the pointer LEFT, which collapsed
-            // the panel out from under whatever you were reaching for. So every
-            // control that wants hover of its own holds the surface open itself
-            // rather than relying on the hitbox underneath it.
-            function hold()    { collapseTimer.stop(); win.hovered = true; }
-            function release() { collapseTimer.restart(); }
+            // hitbox's own, so entering a control inside the panel tells the
+            // hitbox the pointer LEFT the bar. Every control that wants hover
+            // therefore claims the surface, and the claims are COUNTED -- the
+            // enter of one and the exit of the other arrive in that order, so a
+            // release that simply restarted the timer collapsed the panel out
+            // from under the cursor a fifth of a second later. Only the last
+            // release standing starts the clock.
+            property int holds: 0
+            function hold() {
+                holds += 1;
+                collapseTimer.stop();
+                win.hovered = true;
+            }
+            function release() {
+                holds = Math.max(0, holds - 1);
+                // The timer is the grace period for crossing the seam between
+                // two of these areas, where neither is entered for a frame.
+                if (holds === 0)
+                    collapseTimer.restart();
+            }
 
             // The count is what the announce clock watches; a monitor unplugged
             // mid-hover would otherwise leave it stuck above zero forever.
@@ -481,7 +495,7 @@ ShellRoot {
             Timer {
                 id: collapseTimer
                 interval: 220
-                onTriggered: win.hovered = false
+                onTriggered: { win.holds = 0; win.hovered = false; }
             }
 
             // ---------------------------------------------- collapsed: the meter
