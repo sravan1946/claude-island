@@ -81,7 +81,7 @@ esac
 
 # ---- this checkout ----------------------------------------------------------
 head_ "files"
-for f in island.qml state.py status.sh approve.sh session.sh; do
+for f in island.qml Settings.qml themes.js state.py status.sh approve.sh session.sh focus.sh; do
 	if [[ ! -f $HERE/$f ]]; then
 		bad "missing $f"
 	elif [[ $f == *.sh || $f == *.py ]] && [[ ! -x $HERE/$f ]]; then
@@ -185,6 +185,30 @@ if command -v python3 >/dev/null && [[ -x $HERE/state.py ]]; then
 	else
 		bad "state.py did not return valid JSON" "$(printf '%s' "$out" | tail -3)"
 	fi
+fi
+
+# ---- config -----------------------------------------------------------------
+head_ "config"
+CFG="${XDG_CONFIG_HOME:-$HOME/.config}/claude-island/config.json"
+if [[ ! -f $CFG ]]; then
+	ok "no config file -- using defaults ($CFG)"
+elif jq -e . "$CFG" >/dev/null 2>&1; then
+	ok "config  $CFG"
+	mon=$(jq -r 'if .monitors == "all" or .monitors == null then "all" else (.monitors | join(", ")) end' "$CFG")
+	printf '       position=%s  theme=%s  monitors=%s\n' \
+		"$(jq -r '.position // "bottom"' "$CFG")" \
+		"$(jq -r '.theme // "tokyo-night"' "$CFG")" "$mon"
+	# A monitor list naming nothing attached draws the bar on no screen at all,
+	# which looks exactly like the surface being broken.
+	if [[ $mon != all ]] && command -v hyprctl >/dev/null; then
+		have=$(hyprctl monitors -j 2>/dev/null | jq -r '.[].name' | tr '\n' ' ')
+		for m in ${mon//,/ }; do
+			[[ " $have " == *" $m "* ]] || warn "config names monitor '$m', which is not attached" \
+			                                   "attached: ${have:-none}"
+		done
+	fi
+else
+	bad "$CFG is not valid JSON" "delete it to fall back to the defaults"
 fi
 
 # ---- recent trouble ---------------------------------------------------------

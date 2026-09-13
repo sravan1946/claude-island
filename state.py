@@ -382,6 +382,10 @@ def compute():
 
 
     live = {}          # session id -> transcript path (or None)
+    # session id -> the claude pid behind it. Click-to-focus walks up from here
+    # to whichever process owns a window, so a session with no pid (a request
+    # from something already gone) simply is not clickable.
+    pids = {}
     claimed = set()
 
     claimed_pids = set()
@@ -395,6 +399,8 @@ def compute():
             continue
         hit = glob.glob(str(PROJECTS / "*" / f"{sid}.jsonl"))
         live[sid] = hit[0] if hit else None
+        if rp:
+            pids[sid] = int(rp)
         claimed.add(sid)
         # A registered session already accounts for its process; without this the
         # same claude would also claim a transcript by cwd and show up twice.
@@ -406,6 +412,7 @@ def compute():
         if pr["resumed"] and pr["resumed"] not in claimed:
             hit = glob.glob(str(PROJECTS / "*" / f"{pr['resumed']}.jsonl"))
             live[pr["resumed"]] = hit[0] if hit else None
+            pids[pr["resumed"]] = pr["pid"]
             claimed.add(pr["resumed"])
 
     for pr in procs:
@@ -416,6 +423,7 @@ def compute():
             if sid in claimed:
                 continue
             live[sid] = path
+            pids[sid] = pr["pid"]
             claimed.add(sid)
             break
 
@@ -466,6 +474,7 @@ def compute():
             "last": (info.get("last") or "")[:180],
             "mtime": f.get("mtime", 0),
             "registered": sid in registered,
+            "pid": pids.get(sid, 0),
             "pending": pend,
             **dict(zip(("status", "since", "src"),
                        status_of(info, pend, f.get("mtime", 0), feeds.get(sid)))),

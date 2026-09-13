@@ -30,6 +30,12 @@ Allow/Deny and an optional reason back to Claude. The orange rule across the top
 is a five-second clock: when it runs out the panel folds back to the bar and the
 lane keeps pulsing until you deal with it. Hovering takes it off the clock.
 
+**Click a lane** and the terminal running that session comes to the front —
+across workspaces, and into the right tab when your terminal will say which one
+it is. **Right-click** anything for the settings window: theme, colours,
+position, size, which monitors. The bar is drawn on every screen, and takes a
+wider panel on a wider one.
+
 <sup>Shot with `grim` against a blank desktop; the session data is made up, the
 surface is not.</sup>
 
@@ -92,33 +98,72 @@ stopped daemon leaves the normal permission flow exactly as it was.
 
 ## Configuration
 
+Right-click the bar for the settings window — theme, colours, position, monitors,
+sizes, fonts. It writes `~/.config/claude-island/config.json`, which the surface
+watches, so a change lands as you make it. There is no apply button and no
+restart. (The bar hides itself when no session is open, so the right-click needs
+a session running; the file below works either way.)
+
+The file is also fine to edit by hand. Every key is optional; anything missing
+falls back to the default:
+
+```json
+{
+  "position": "bottom",
+  "monitors": "all",
+  "theme": "tokyo-night",
+  "colors": { "flow": "#5ad6ff" },
+  "laneWidth": 46,
+  "barHeight": 10,
+  "panelWidth": 0,
+  "announceMs": 5000,
+  "fontSans": "",
+  "fontMono": ""
+}
+```
+
+| key | default | meaning |
+|---|---|---|
+| `position`   | `bottom` | which screen edge to live on: `bottom` or `top` |
+| `monitors`   | `all` | `"all"`, or a list of names: `["DP-1", "eDP-1"]`. A name that is not attached is skipped, so a docked config still works on the train |
+| `theme`      | `tokyo-night` | `tokyo-night`, `catppuccin-mocha`, `gruvbox-dark`, `nord`, `everforest-dark` — see `themes.js` |
+| `colors`     | `{}` | per-key overrides on top of the theme, six-digit hex |
+| `laneWidth`  | 46 | width of one session's lane |
+| `barHeight`  | 10 | height of the collapsed bar |
+| `panelWidth` | 0 | `0` takes a share of each screen, so a wide monitor gets a wider panel |
+| `announceMs` | 5000 | how long a new request holds the panel open |
+| `fontSans` / `fontMono` | built-in | override the two faces |
+
+The rest are environment variables on the service or the hooks:
+
 | env | default | meaning |
 |---|---|---|
 | `CA_IDLE_AFTER` | 90   | seconds of silence before a session reads as idle |
 | `CA_TIMEOUT`    | 300  | seconds `approve.sh` waits for a click before deferring |
 | `CA_TICK`       | 0.25 | seconds between change checks in the state feed |
 | `CA_HEARTBEAT`  | 10   | seconds between full rescans, for process liveness |
-| `CA_ANNOUNCE_MS`| 5000 | how long a new request holds the panel open |
-| `CA_FONT_SANS`  | Cantarell | face for titles and prose |
+| `CA_FONT_SANS`  | Cantarell | face for titles and prose, when the config does not say |
 | `CA_FONT_MONO`  | JetBrainsMono Nerd Font | face for status, timers, paths |
 | `CA_USAGE_CACHE`| `~/.cache/claude-status/cache.json` | where to read usage limits from |
+| `CA_DEBUG`      | unset | `focus.sh` logs what it walked to `focus.log` |
 
 Set them on the service: `systemctl --user edit claude-island.service`, then an
-`[Service]` section with `Environment=CA_ANNOUNCE_MS=8000`. Hook-side knobs
+`[Service]` section with `Environment=CA_IDLE_AFTER=120`. Hook-side knobs
 (`CA_TIMEOUT`) belong in your shell environment instead, since Claude Code spawns
 the hooks.
-
-The palette is Tokyo Night, defined in one block at the top of `island.qml`.
 
 ## Files
 
 | file | role |
 |---|---|
 | `island.qml`   | the surface — a quickshell layer-shell client, runs as a user service |
+| `Settings.qml` | the settings window, opened by right-clicking the surface |
+| `themes.js`    | the palettes and the config defaults |
 | `state.py`     | session discovery and status; `--serve` streams a JSON line per change |
 | `status.sh`    | status hook: one line per state change, on every transition event |
 | `approve.sh`   | `PreToolUse` hook: writes a request, blocks for the answer |
 | `session.sh`   | `SessionStart` / `SessionEnd` hook: registers the session |
+| `focus.sh`     | brings a session's terminal to the front, and its tab where it can |
 | `install.sh`   | dependency check, service, hook registration |
 | `doctor.sh`    | diagnoses a broken or partial install |
 
@@ -245,6 +290,41 @@ Excluded: the daemon, `bg-pty-host`, `bg-spare` and anything under them
 (background sessions are real processes but not open terminals), and any
 session whose transcript has a `continued-in` pointing at a live successor.
 
+## Focus
+
+Clicking a lane runs `focus.sh <claude-pid>`, and the pid is the only thing the
+surface knows. It is not enough on its own: **a claude process does not own a
+window.** The terminal above it does, and that terminal may be holding four
+sessions in four tabs. So the walk happens in two stages.
+
+Stage one is the process tree. `focus.sh` climbs `/proc/<pid>/stat` collecting
+ancestors — typically `claude -> fish -> kitty` — and asks the compositor which
+of them owns a window (`hyprctl clients`, `swaymsg`, `niri msg`). That is the
+window to raise, and raising it crosses workspaces.
+
+Stage two is the tab, and it cannot be done from the outside: no compositor knows
+a terminal has tabs. The mapping exists in exactly one place, which is the
+session's own environment — so `focus.sh` reads `/proc/<pid>/environ` and uses
+whatever is in there:
+
+| variable | what it does |
+|---|---|
+| `TMUX` + `TMUX_PANE` | `tmux select-window` / `select-pane` on that socket — exact |
+| `KITTY_LISTEN_ON` + `KITTY_WINDOW_ID` | `kitty @ focus-window --match id:` — exact, but needs `allow_remote_control yes` and a `listen_on` socket in `kitty.conf` |
+| `WEZTERM_PANE` | `wezterm cli activate-pane` — exact |
+
+Without one of those you get the window and not the tab, which is still most of
+the way there. Nothing in stage two can fail loudly: a missing tool or a terminal
+with no control channel costs precision, never the window.
+
+One Hyprland note, since it cost an hour: **0.56 moved dispatchers to a Lua API**
+and the old spelling now errors out. `focus.sh` tries
+`hyprctl dispatch focuswindow address:0x…` first and falls back to
+`hyprctl dispatch "hl.dsp.focus({window='address:0x…'})"`, so it works either
+side of that change. Worth knowing that `hyprctl eval "hl.dsp.focus(…)"` only
+*builds* a dispatcher and returns `ok` without doing anything — it has to go
+through `hyprctl dispatch`, which wraps it in `hl.dispatch()`.
+
 ## Status
 
 Status comes from hook events, not from the transcript. **The transcript cannot
@@ -336,6 +416,21 @@ ignored, since the parent's own `running Agent` already covers that span.
 The bar is read peripherally, in about the time it takes to glance at the bottom
 of the screen, so the two questions it answers there are *is anything working*
 and *does anything want me*.
+
+**One surface per monitor, sized to it.** A single layer-shell window lands on
+whichever screen the toolkit picked and nowhere else, so the bar was simply
+missing from half a two-monitor desk. Each screen now gets its own surface with
+its own hover state — reaching for one panel must not open the other — and the
+panel takes a share of the screen it is on rather than a constant tuned on one
+laptop, clamped so it is neither cramped nor a billboard.
+
+**Flipping to the top edge is positioned, not anchored.** Everything that touches
+an edge is placed with a `y` binding rather than a conditional anchor, and that is
+not a style preference: in QML an anchor that has been established **cannot be
+released by re-binding it to `undefined`**. Since the config loads a frame after
+the surface is built, the bar was anchored to the bottom first and then to the
+top as well — anchored to both, and stretched down the whole screen as a black
+slab. It looks like a rendering bug and it is an anchoring one.
 
 **Lane order never changes.** Lanes are ordered by when the session started —
 oldest leftmost, new ones appended on the right — and nothing moves once it is

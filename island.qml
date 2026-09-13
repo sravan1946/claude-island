@@ -14,12 +14,69 @@ import QtQuick.Layouts
 import Quickshell
 import Quickshell.Wayland
 import Quickshell.Io
+import "themes.js" as Themes
 
 ShellRoot {
     id: root
 
     readonly property string dir: Quickshell.shellDir
     readonly property string stateRoot: (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state")) + "/claude-approve"
+    readonly property string cfgDir: (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")) + "/claude-island"
+    readonly property string cfgPath: cfgDir + "/config.json"
+
+    // ----------------------------------------------------------------- config
+    // Watched, not read once: the settings window writes this file and the
+    // surface picks the change up, so there is one path in and no second
+    // channel to keep in step. A missing or broken file is a normal state --
+    // it means the defaults, not an error.
+    property var cfg: Themes.settle({})
+
+    FileView {
+        id: cfgFile
+        path: root.cfgPath
+        watchChanges: true
+        // No file is the common case, not a fault worth a line in the journal.
+        printErrors: false
+        onFileChanged: reload()
+        onLoaded: {
+            try {
+                root.cfg = Themes.settle(JSON.parse(text() || "{}"));
+            } catch (e) {
+                root.cfg = Themes.settle({});
+            }
+        }
+        onLoadFailed: root.cfg = Themes.settle({})
+    }
+
+    // FileView will not make the directory for a path that has none.
+    Process {
+        id: cfgDirProc
+        command: ["mkdir", "-p", root.cfgDir]
+        running: true
+    }
+
+    function saveCfg(next) {
+        root.cfg = Themes.settle(next);
+        cfgFile.setText(JSON.stringify(root.cfg, null, 2) + "\n");
+    }
+
+    // Right-click anything on the surface to open it.
+    property bool settingsOpen: false
+
+    Settings {
+        isl: root
+        visible: root.settingsOpen
+        // Closing it from the titlebar has to put the flag back, or the next
+        // right-click toggles a window that is already "open" and nothing shows.
+        onVisibleChanged: if (!visible) root.settingsOpen = false
+    }
+
+    // One key at a time, which is every edit the settings window makes.
+    function setCfg(key, value) {
+        const next = Themes.settle(root.cfg);
+        next[key] = value;
+        saveCfg(next);
+    }
 
     property var sessions: []
     property string sig: ""     // what `sessions` last drew; an identical feed
@@ -29,14 +86,16 @@ ShellRoot {
     // the reading got a second older, so the surface ages it against its own
     // clock -- the same trick the per-session timers use.
     property double usageAt: 0
-    property bool hovered: false
+    // Hover is per surface but the announce clock is not: one counter, so
+    // reaching for any monitor's panel takes the request off the clock.
+    property int hoverCount: 0
+    readonly property bool hovered: hoverCount > 0
     // A new request opens the panel on its own, but only long enough to be seen.
     // Holding it open until answered meant a surface that cannot take your
     // keyboard sat over the screen indefinitely; after this it collapses back to
     // the bar and the pulsing lane carries the request until you deal with it.
     property bool announcing: false
     property int prevAsking: 0
-    readonly property bool expanded: hovered || announcing
 
     onAskingCountChanged: {
         if (askingCount > prevAsking) {
@@ -52,7 +111,7 @@ ShellRoot {
 
     Timer {
         id: announceTimer
-        interval: parseInt(Quickshell.env("CA_ANNOUNCE_MS") || "5000")
+        interval: root.cfg.announceMs
         onTriggered: root.announcing = false
     }
 
@@ -82,14 +141,17 @@ ShellRoot {
     }
 
     // ---------------------------------------------------------------- palette
-    // Tokyo Night, but rationed. Four grounds form one luminance ramp instead of
-    // the three unrelated darks this used to mix.
-    readonly property color ink:    "#15161e"   // the bar, hard against the edge
-    readonly property color base:   "#1a1b26"   // panel ground
-    readonly property color edge:   "#2f334d"   // hairlines
-    readonly property color muted:  "#565f89"   // secondary type
-    readonly property color text:   "#a9b1d6"   // body
-    readonly property color bright: "#c0caf5"   // titles, emphasis
+    // The default is Tokyo Night, rationed: four grounds forming one luminance
+    // ramp, and hue spent only on status. Any of it can be replaced from the
+    // config -- see themes.js for what each key is answering.
+    readonly property var pal: Themes.palette(cfg)
+
+    readonly property color ink:    pal.ink      // the bar, hard against the edge
+    readonly property color base:   pal.base     // panel ground
+    readonly property color edge:   pal.edge     // hairlines
+    readonly property color muted:  pal.muted    // secondary type
+    readonly property color text:   pal.text     // body
+    readonly property color bright: pal.bright   // titles, emphasis
 
     // Hue is the scarce resource. Warm appears in exactly one situation -- a
     // session is blocked on you -- so it never has to compete for attention.
@@ -97,32 +159,41 @@ ShellRoot {
     // cyan against blue was a distinction only a colour picker could see in a
     // 5px lane, so thinking moved to violet. Cyan is the machine acting on the
     // world, violet is the machine thinking, orange is you.
-    readonly property color signal_: "#ff9e64"  // waiting on you
-    readonly property color flow:    "#5ad6ff"  // producing: a tool, or text
-    readonly property color mull:    "#9d7cd8"  // waiting on the model
-    readonly property color fault:   "#f7768e"  // the turn died on an API error
-    readonly property color stall:   "#e0af68"  // parked on the usage limit
-    readonly property color quiet:   "#3b4261"  // idle
+    readonly property color signal_: pal.signal_ // waiting on you
+    readonly property color flow:    pal.flow    // producing: a tool, or text
+    readonly property color mull:    pal.mull    // waiting on the model
+    readonly property color fault:   pal.fault   // the turn died on an API error
+    readonly property color stall:   pal.stall   // parked on the usage limit
+    readonly property color quiet:   pal.quiet   // idle
     // Earned their saturation by being a two-way choice, and used nowhere else.
-    readonly property color yes:     "#9ece6a"
-    readonly property color no:      "#f7768e"
+    readonly property color yes:     pal.yes
+    readonly property color no:      pal.no
 
     // Two families with a job each: one for what a person meant, one for what the
     // machine is doing. Override if you do not have these; Qt substitutes a
     // default rather than failing, but the contrast is the point.
-    readonly property string sans: Quickshell.env("CA_FONT_SANS") || "Cantarell"
-    readonly property string mono: Quickshell.env("CA_FONT_MONO") || "JetBrainsMono Nerd Font"
+    readonly property string sans: cfg.fontSans || Quickshell.env("CA_FONT_SANS") || "Cantarell"
+    readonly property string mono: cfg.fontMono || Quickshell.env("CA_FONT_MONO") || "JetBrainsMono Nerd Font"
 
     // ------------------------------------------------------------ lane sizing
-    readonly property int laneW:    46
+    readonly property int laneW:   cfg.laneWidth
     readonly property int laneGap:  4
     readonly property int barPad:   6
-    readonly property int barMinW:  150
-    readonly property int barW: Math.max(
-        barMinW,
-        sessions.length * laneW + Math.max(0, sessions.length - 1) * laneGap + 2 * barPad)
-    readonly property int barH:  10
-    readonly property int grabH: 18    // generous, so the bar is easy to hit
+    readonly property int barH:    cfg.barHeight
+    readonly property int grabH:   Math.max(18, barH + 8)  // generous, so the bar is easy to hit
+
+    // Which side of the screen this lives on. Everything that touches an edge
+    // reads this rather than assuming the bottom.
+    readonly property bool atTop: cfg.position === "top"
+
+    // Screens to draw on. An unknown name in the list is simply not matched, so
+    // a config written on a docked laptop does not break on the train.
+    readonly property var monitors: {
+        const want = cfg.monitors;
+        if (!want || want === "all" || !want.length)
+            return Quickshell.screens;
+        return Quickshell.screens.filter(function (s) { return want.indexOf(s.name) >= 0; });
+    }
 
     // Cool means the machine is busy and you can ignore it. Anything warm means
     // the session is stopped and you are the reason it stays stopped, or it
@@ -283,6 +354,20 @@ ShellRoot {
         }
     }
 
+    // Clicking a session brings its terminal to the front. A claude process owns
+    // no window -- the terminal above it does, and that terminal may be holding
+    // several sessions in tabs -- so the walking happens in focus.sh, which has
+    // the process tree and the session's own environment to work from.
+    Process { id: focusProc }
+
+    function focusSession(pid) {
+        if (!pid)
+            return;
+        focusProc.running = false;
+        focusProc.command = [root.dir + "/focus.sh", String(pid)];
+        focusProc.running = true;
+    }
+
     Timer {
         // If the feed dies the surface would silently freeze on stale state, so
         // bring it back. The delay keeps a crash-looping binary from spinning.
@@ -291,596 +376,678 @@ ShellRoot {
         onTriggered: feed.running = true
     }
 
-    PanelWindow {
-        id: win
-        WlrLayershell.layer: WlrLayer.Overlay
-        WlrLayershell.namespace: "claude-island"
-        // Keyboard focus only while something is actually asking, and only on a
-        // click. Holding it permanently is how a stray keypress once produced a
-        // spurious allow; OnDemand means the surface takes focus when you click
-        // into the reason box and at no other time.
-        WlrLayershell.keyboardFocus: (root.expanded && root.askingCount > 0)
-                                     ? WlrKeyboardFocus.OnDemand
-                                     : WlrKeyboardFocus.None
-        exclusionMode: ExclusionMode.Ignore
+    // One surface per monitor. A single PanelWindow lands on whichever screen
+    // Quickshell picked and nowhere else, which on a two-monitor desk means the
+    // bar is missing from the half you are looking at. Each gets its own hover
+    // state -- reaching for one panel must not open the other.
+    Variants {
+        model: root.monitors
+        PanelWindow {
+            id: win
+            required property var modelData
+            screen: modelData
 
-        anchors { bottom: true; left: true; right: true }
-        implicitHeight: 460
-        color: "transparent"
-        visible: root.sessions.length > 0
+            property bool hovered: false
+            readonly property bool expanded: hovered || root.announcing
+            // The count is what the announce clock watches; a monitor unplugged
+            // mid-hover would otherwise leave it stuck above zero forever.
+            onHoveredChanged: root.hoverCount += hovered ? 1 : -1
+            Component.onDestruction: if (hovered) root.hoverCount -= 1
 
-        // The mask must NOT follow the animating panel: if the pointer lands
-        // outside it mid-animation the compositor delivers the event to the
-        // window below, which fires onExited, collapses, and re-expands -- the
-        // flicker that made the buttons unclickable. hitbox snaps to its target
-        // size with no Behavior, so it always covers the panel.
-        mask: Region { item: hitbox }
+            // A 468px panel is right on a 1280px-wide desktop and mean on a
+            // 3440px one, so both widths are a fraction of the screen inside
+            // sane bounds rather than a constant that was tuned on one laptop.
+            readonly property int panelW: root.cfg.panelWidth > 0
+                ? root.cfg.panelWidth
+                : Math.round(Math.max(400, Math.min(680, (screen ? screen.width : 1280) * 0.36)))
+            readonly property int barMinW: Math.round(panelW * 0.33)
+            readonly property int barW: Math.max(
+                barMinW,
+                root.sessions.length * root.laneW
+                    + Math.max(0, root.sessions.length - 1) * root.laneGap
+                    + 2 * root.barPad)
 
-        Item {
-            id: hitbox
-            anchors.horizontalCenter: parent.horizontalCenter
-            anchors.bottom: parent.bottom
-            // Both dimensions jump straight to the final size, and the height
-            // reads the panel's TARGET rather than its animating height. A mask
-            // that tracks the animation is a mask that is smaller than what you
-            // can see for a fifth of a second: reach for Allow at the right edge
-            // during that window and the click lands on the window underneath,
-            // which fires onExited and collapses the panel out from under you.
-            width:  root.expanded ? panel.width + 8 : root.barW + 24
-            height: root.expanded ? panel.targetH + 12 : root.grabH
+            WlrLayershell.layer: WlrLayer.Overlay
+            WlrLayershell.namespace: "claude-island"
+            // Keyboard focus only while something is actually asking, and only on a
+            // click. Holding it permanently is how a stray keypress once produced a
+            // spurious allow; OnDemand means the surface takes focus when you click
+            // into the reason box and at no other time.
+            WlrLayershell.keyboardFocus: (win.expanded && root.askingCount > 0)
+                                         ? WlrKeyboardFocus.OnDemand
+                                         : WlrKeyboardFocus.None
+            exclusionMode: ExclusionMode.Ignore
 
-            MouseArea {
-                anchors.fill: parent
-                hoverEnabled: true
-                acceptedButtons: Qt.NoButton
-                onEntered: { collapseTimer.stop(); root.hovered = true; }
-                onExited:  collapseTimer.restart()
+            anchors { top: root.atTop; bottom: !root.atTop; left: true; right: true }
+            implicitHeight: 460
+            color: "transparent"
+            visible: root.sessions.length > 0
+
+            // The mask must NOT follow the animating panel: if the pointer lands
+            // outside it mid-animation the compositor delivers the event to the
+            // window below, which fires onExited, collapses, and re-expands -- the
+            // flicker that made the buttons unclickable. hitbox snaps to its target
+            // size with no Behavior, so it always covers the panel.
+            mask: Region { item: hitbox }
+
+            Item {
+                id: hitbox
+                anchors.horizontalCenter: parent.horizontalCenter
+                // Positioned, not anchored. Re-binding an anchor to undefined
+                // does not release it once it has been established, so flipping
+                // the bar to the other edge left everything anchored to BOTH
+                // and stretched down the whole screen.
+                y: root.atTop ? 0 : parent.height - height
+                // Both dimensions jump straight to the final size, and the height
+                // reads the panel's TARGET rather than its animating height. A mask
+                // that tracks the animation is a mask that is smaller than what you
+                // can see for a fifth of a second: reach for Allow at the right edge
+                // during that window and the click lands on the window underneath,
+                // which fires onExited and collapses the panel out from under you.
+                width:  win.expanded ? panel.width + 8 : win.barW + 24
+                height: win.expanded ? panel.targetH + 12 : root.grabH
+
+                MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    acceptedButtons: Qt.NoButton
+                    onEntered: { collapseTimer.stop(); win.hovered = true; }
+                    onExited:  collapseTimer.restart()
+                }
             }
-        }
 
-        Timer {
-            id: collapseTimer
-            interval: 220
-            onTriggered: root.hovered = false
-        }
+            Timer {
+                id: collapseTimer
+                interval: 220
+                onTriggered: win.hovered = false
+            }
 
-        // ---------------------------------------------- collapsed: the meter
-        Rectangle {
-            id: meter
-            anchors.horizontalCenter: parent.horizontalCenter
-            anchors.bottom: parent.bottom
-            width: root.barW
-            Behavior on width { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } }
-            height: root.barH
-            // Flush with the screen edge, so only the top corners round -- a
-            // fully rounded pill sitting on the edge reads as floating.
-            // Per-corner radius needs Qt 6.7+; this is 6.11.
-            topLeftRadius: 5
-            topRightRadius: 5
-            color: root.ink
-            // No fade on expand. The panel is opaque, anchored to the same edge
-            // and drawn after, so it simply covers this -- one surface rising,
-            // rather than two things cross-dissolving into each other.
-
-            // A rule along the top rather than an outline around everything:
-            // it separates the bar from the desktop without drawing a box.
+            // ---------------------------------------------- collapsed: the meter
             Rectangle {
-                anchors { left: parent.left; right: parent.right; top: parent.top
-                          leftMargin: 5; rightMargin: 5 }
-                height: 1
-                color: root.askingCount > 0
-                       ? Qt.rgba(root.signal_.r, root.signal_.g, root.signal_.b, 0.55)
-                       : root.edge
-                Behavior on color { ColorAnimation { duration: 300 } }
-            }
+                id: meter
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: root.atTop ? 0 : parent.height - height
+                width: win.barW
+                Behavior on width { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } }
+                height: root.barH
+                // Flush with the screen edge, so only the two corners facing the
+                // desktop round -- a fully rounded pill sitting on the edge reads
+                // as floating. Per-corner radius needs Qt 6.7+; this is 6.11.
+                topLeftRadius:     root.atTop ? 0 : 5
+                topRightRadius:    root.atTop ? 0 : 5
+                bottomLeftRadius:  root.atTop ? 5 : 0
+                bottomRightRadius: root.atTop ? 5 : 0
+                color: root.ink
+                // No fade on expand. The panel is opaque, anchored to the same edge
+                // and drawn after, so it simply covers this -- one surface rising,
+                // rather than two things cross-dissolving into each other.
 
-            // Lanes share the bar's full width. Past the minimum width the bar
-            // grows by a lane per session rather than subdividing what it has,
-            // so opening a session never shrinks the others below laneW.
-            RowLayout {
-                anchors { fill: parent; leftMargin: root.barPad; rightMargin: root.barPad }
-                spacing: root.laneGap
+                // A rule along the inner edge rather than an outline around
+                // everything: it separates the bar from the desktop without
+                // drawing a box.
+                Rectangle {
+                    anchors { left: parent.left; right: parent.right
+                              leftMargin: 5; rightMargin: 5 }
+                    height: 1
+                    y: root.atTop ? parent.height - height : 0
+                    color: root.askingCount > 0
+                           ? Qt.rgba(root.signal_.r, root.signal_.g, root.signal_.b, 0.55)
+                           : root.edge
+                    Behavior on color { ColorAnimation { duration: 300 } }
+                }
 
-                Repeater {
-                    model: root.sessions
-                    delegate: Item {
-                        id: lane
-                        required property var modelData
-                        readonly property string st: modelData.status || "idle"
-                        // Not readonly and not inline in the gradient: a
-                        // Gradient's stops cannot animate, so the crossfade has
-                        // to happen on the colour the stops are derived from.
-                        property color tone: root.statusTone(st)
-                        Behavior on tone { ColorAnimation { duration: 280 } }
-                        readonly property bool busy: root.statusBusy(st)
-                        readonly property bool asking: st === "waiting"
-                        readonly property bool working: root.statusWorking(st)
-                        Layout.fillWidth: true
-                        Layout.preferredWidth: root.laneW
-                        Layout.fillHeight: true
+                // Lanes share the bar's full width. Past the minimum width the bar
+                // grows by a lane per session rather than subdividing what it has,
+                // so opening a session never shrinks the others below laneW.
+                RowLayout {
+                    anchors { fill: parent; leftMargin: root.barPad; rightMargin: root.barPad }
+                    spacing: root.laneGap
 
-                        // Carries the heartbeat, so the bloom and the lane dim
-                        // together instead of drifting out of step.
-                        property real beat: 1.0
+                    Repeater {
+                        model: root.sessions
+                        delegate: Item {
+                            id: lane
+                            required property var modelData
+                            readonly property string st: modelData.status || "idle"
+                            // Not readonly and not inline in the gradient: a
+                            // Gradient's stops cannot animate, so the crossfade has
+                            // to happen on the colour the stops are derived from.
+                            property color tone: root.statusTone(st)
+                            Behavior on tone { ColorAnimation { duration: 280 } }
+                            readonly property bool busy: root.statusBusy(st)
+                            readonly property bool asking: st === "waiting"
+                            readonly property bool working: root.statusWorking(st)
+                            Layout.fillWidth: true
+                            Layout.preferredWidth: root.laneW
+                            Layout.fillHeight: true
 
-                        // Lanes sit on the screen edge and grow upward, like a
-                        // level meter -- so the bar's silhouette is the reading.
-                        Rectangle {
-                            id: fill
-                            anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
-                            topLeftRadius: 2
-                            topRightRadius: 2
-                            // The heartbeat deliberately does NOT touch this.
-                            // Fading orange toward a near-black ground turns it
-                            // brown however shallow the dip is -- dimming the
-                            // colour was simply the wrong channel for it.
+                            // Carries the heartbeat, so the bloom and the lane dim
+                            // together instead of drifting out of step.
+                            property real beat: 1.0
 
-                            // Light spilling off the lane. A flat fill on a
-                            // black strip reads as painted on; this reads as
-                            // lit, and it is what makes a working session
-                            // catch your eye without the lane getting taller.
-                            // A gradient rectangle was the first attempt and
-                            // looked like a smear, because a glow needs to fall
-                            // off sideways too, not only upward.
-                            layer.enabled: lane.busy
-                            layer.effect: MultiEffect {
-                                shadowEnabled: true
-                                shadowColor: lane.tone
-                                shadowBlur: 1.0
-                                shadowVerticalOffset: -2
-                                // The halo carries the beat instead. The lane
-                                // keeps its true colour and the light around it
-                                // is what swells, which reads as a beacon.
-                                shadowScale: lane.asking ? 1.00 + 0.14 * lane.beat : 1.06
-                                shadowOpacity: lane.asking ? 0.25 + 0.75 * lane.beat : 0.5
-                                Behavior on shadowOpacity {
-                                    enabled: !lane.asking
-                                    NumberAnimation { duration: 260 }
+                            // The click target is the lane's whole column, not the
+                            // few pixels it happens to be drawn at -- an idle lane
+                            // is 2px tall and nobody can hit 2px on purpose.
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                onClicked: function (m) {
+                                    if (m.button === Qt.RightButton)
+                                        root.settingsOpen = true;
+                                    else
+                                        root.focusSession(lane.modelData.pid);
                                 }
                             }
-                            // Brighter where it emerges: a lane lit from its own
-                            // top edge, not a swatch of flat colour.
-                            gradient: Gradient {
-                                GradientStop { position: 0.0; color: Qt.lighter(lane.tone, 1.22) }
-                                GradientStop { position: 1.0; color: lane.tone }
-                            }
 
-                            // Starts flat and rises once, so a session opening
-                            // is a lane coming up rather than a lane appearing.
-                            height: 0
-                            Component.onCompleted: height = Qt.binding(function () {
-                                return root.statusRise(lane.st);
-                            })
-                            // A touch of overshoot: the lane arrives at its new
-                            // level and settles, which reads as a meter rather
-                            // than a value being set.
-                            Behavior on height {
-                                NumberAnimation { duration: 340; easing.type: Easing.OutBack
-                                                  easing.overshoot: 1.4 }
-                            }
-                        }
-
-                            // Light travelling along the lane. The lane already
-                        // says a session is working; this says it is still
-                        // moving, which a static bar cannot. Only lanes that
-                        // are actually producing get it -- putting it on a
-                        // stalled or waiting lane would be a lie, and the
-                        // waiting lane has the heartbeat to itself.
-                        Item {
-                            // Sits OUTSIDE the layered fill on purpose. Inside
-                            // it, every frame of the sweep invalidated the layer
-                            // and re-ran the glow's blur shader -- 3.5% of a
-                            // core against 0.4% idle. Out here the blur stays
-                            // cached and only this strip repaints.
-                            anchors { left: parent.left; right: parent.right
-                                      bottom: parent.bottom }
-                            height: fill.height
-                            clip: true
-                            visible: lane.working
+                            // Lanes sit on the screen edge and grow upward, like a
+                            // level meter -- so the bar's silhouette is the reading.
                             Rectangle {
-                                id: sheen
-                                width: Math.max(16, parent.width * 0.38)
-                                height: parent.height
-                                gradient: Gradient {
-                                    orientation: Gradient.Horizontal
-                                    GradientStop { position: 0.0; color: "transparent" }
-                                    GradientStop { position: 0.5; color: Qt.rgba(1, 1, 1, 0.38) }
-                                    GradientStop { position: 1.0; color: "transparent" }
-                                }
-                                SequentialAnimation on x {
-                                    running: lane.working
-                                    loops: Animation.Infinite
-                                    NumberAnimation {
-                                        from: -sheen.width
-                                        to: lane.width + sheen.width
-                                        duration: 1400
-                                        easing.type: Easing.InOutSine
+                                id: fill
+                                anchors { left: parent.left; right: parent.right }
+                                y: root.atTop ? 0 : parent.height - height
+                                topLeftRadius:     root.atTop ? 0 : 2
+                                topRightRadius:    root.atTop ? 0 : 2
+                                bottomLeftRadius:  root.atTop ? 2 : 0
+                                bottomRightRadius: root.atTop ? 2 : 0
+                                // The heartbeat deliberately does NOT touch this.
+                                // Fading orange toward a near-black ground turns it
+                                // brown however shallow the dip is -- dimming the
+                                // colour was simply the wrong channel for it.
+
+                                // Light spilling off the lane. A flat fill on a
+                                // black strip reads as painted on; this reads as
+                                // lit, and it is what makes a working session
+                                // catch your eye without the lane getting taller.
+                                // A gradient rectangle was the first attempt and
+                                // looked like a smear, because a glow needs to fall
+                                // off sideways too, not only upward.
+                                layer.enabled: lane.busy
+                                layer.effect: MultiEffect {
+                                    shadowEnabled: true
+                                    shadowColor: lane.tone
+                                    shadowBlur: 1.0
+                                    shadowVerticalOffset: root.atTop ? 2 : -2
+                                    // The halo carries the beat instead. The lane
+                                    // keeps its true colour and the light around it
+                                    // is what swells, which reads as a beacon.
+                                    shadowScale: lane.asking ? 1.00 + 0.14 * lane.beat : 1.06
+                                    shadowOpacity: lane.asking ? 0.25 + 0.75 * lane.beat : 0.5
+                                    Behavior on shadowOpacity {
+                                        enabled: !lane.asking
+                                        NumberAnimation { duration: 260 }
                                     }
-                                    // A sweep with no gap reads as a progress
-                                    // bar; the rest is what makes it a pulse of
-                                    // light. The gap is also most of the cost
-                                    // control -- the surface only repaints
-                                    // while the sweep is moving, so the duty
-                                    // cycle is the CPU bill. 1.4s on, 3s off.
-                                    PauseAnimation { duration: 3000 }
+                                }
+                                // Brighter where it emerges: a lane lit from its own
+                                // top edge, not a swatch of flat colour.
+                                // Brightest where it emerges, which is the end
+                                // away from the screen edge.
+                                gradient: Gradient {
+                                    GradientStop { position: 0.0
+                                        color: root.atTop ? lane.tone : Qt.lighter(lane.tone, 1.22) }
+                                    GradientStop { position: 1.0
+                                        color: root.atTop ? Qt.lighter(lane.tone, 1.22) : lane.tone }
+                                }
+
+                                // Starts flat and rises once, so a session opening
+                                // is a lane coming up rather than a lane appearing.
+                                height: 0
+                                Component.onCompleted: height = Qt.binding(function () {
+                                    return root.statusRise(lane.st);
+                                })
+                                // A touch of overshoot: the lane arrives at its new
+                                // level and settles, which reads as a meter rather
+                                // than a value being set.
+                                Behavior on height {
+                                    NumberAnimation { duration: 340; easing.type: Easing.OutBack
+                                                      easing.overshoot: 1.4 }
                                 }
                             }
-                        }
 
-                        // Two quick beats and a rest -- a pulse, not a fade.
-                        // A sine breath reads as "loading"; this reads as
-                        // something asking for you, which is what it is.
-                        SequentialAnimation on beat {
-                            running: lane.asking
-                            loops: Animation.Infinite
-                            alwaysRunToEnd: true
-                            onStopped: lane.beat = 1.0
-                            NumberAnimation { to: 0.15; duration: 170; easing.type: Easing.OutQuad }
-                            NumberAnimation { to: 1.0;  duration: 170; easing.type: Easing.InQuad }
-                            NumberAnimation { to: 0.15; duration: 170; easing.type: Easing.OutQuad }
-                            NumberAnimation { to: 1.0;  duration: 200; easing.type: Easing.InQuad }
-                            PauseAnimation  { duration: 820 }
+                                // Light travelling along the lane. The lane already
+                            // says a session is working; this says it is still
+                            // moving, which a static bar cannot. Only lanes that
+                            // are actually producing get it -- putting it on a
+                            // stalled or waiting lane would be a lie, and the
+                            // waiting lane has the heartbeat to itself.
+                            Item {
+                                // Sits OUTSIDE the layered fill on purpose. Inside
+                                // it, every frame of the sweep invalidated the layer
+                                // and re-ran the glow's blur shader -- 3.5% of a
+                                // core against 0.4% idle. Out here the blur stays
+                                // cached and only this strip repaints.
+                                anchors { left: parent.left; right: parent.right
+                                          bottom: parent.bottom }
+                                height: fill.height
+                                clip: true
+                                visible: lane.working
+                                Rectangle {
+                                    id: sheen
+                                    width: Math.max(16, parent.width * 0.38)
+                                    height: parent.height
+                                    gradient: Gradient {
+                                        orientation: Gradient.Horizontal
+                                        GradientStop { position: 0.0; color: "transparent" }
+                                        GradientStop { position: 0.5; color: Qt.rgba(1, 1, 1, 0.38) }
+                                        GradientStop { position: 1.0; color: "transparent" }
+                                    }
+                                    SequentialAnimation on x {
+                                        running: lane.working
+                                        loops: Animation.Infinite
+                                        NumberAnimation {
+                                            from: -sheen.width
+                                            to: lane.width + sheen.width
+                                            duration: 1400
+                                            easing.type: Easing.InOutSine
+                                        }
+                                        // A sweep with no gap reads as a progress
+                                        // bar; the rest is what makes it a pulse of
+                                        // light. The gap is also most of the cost
+                                        // control -- the surface only repaints
+                                        // while the sweep is moving, so the duty
+                                        // cycle is the CPU bill. 1.4s on, 3s off.
+                                        PauseAnimation { duration: 3000 }
+                                    }
+                                }
+                            }
+
+                            // Two quick beats and a rest -- a pulse, not a fade.
+                            // A sine breath reads as "loading"; this reads as
+                            // something asking for you, which is what it is.
+                            SequentialAnimation on beat {
+                                running: lane.asking
+                                loops: Animation.Infinite
+                                alwaysRunToEnd: true
+                                onStopped: lane.beat = 1.0
+                                NumberAnimation { to: 0.15; duration: 170; easing.type: Easing.OutQuad }
+                                NumberAnimation { to: 1.0;  duration: 170; easing.type: Easing.InQuad }
+                                NumberAnimation { to: 0.15; duration: 170; easing.type: Easing.OutQuad }
+                                NumberAnimation { to: 1.0;  duration: 200; easing.type: Easing.InQuad }
+                                PauseAnimation  { duration: 820 }
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // ---------------------------------------------- expanded: the panel
-        Rectangle {
-            id: panel
-            anchors.horizontalCenter: parent.horizontalCenter
-            anchors.bottom: parent.bottom
-            width: 468
-            readonly property int targetH: body.implicitHeight + 20
-            height: root.expanded ? targetH : 0
-            topLeftRadius: 12
-            topRightRadius: 12
-            clip: true
-
-            // Lit from its own top edge, like the lanes. A single flat slab of
-            // #1a1b26 is what made the panel read as a screenshot of a panel.
-            gradient: Gradient {
-                GradientStop { position: 0.0; color: Qt.lighter(root.base, 1.30) }
-                GradientStop { position: 0.55; color: root.base }
-                GradientStop { position: 1.0; color: root.ink }
-            }
-
-            visible: height > 0
-            // No opacity fade. The panel rises out of the bar and the bar is
-            // still there underneath; fading it in as well made two surfaces
-            // out of what should read as one.
-            Behavior on height {
-                NumberAnimation { duration: 260; easing.type: Easing.OutBack
-                                  easing.overshoot: 0.9 }
-            }
-
+            // ---------------------------------------------- expanded: the panel
             Rectangle {
-                anchors { left: parent.left; right: parent.right; top: parent.top }
-                height: 1
-                color: root.askingCount > 0
-                       ? Qt.rgba(root.signal_.r, root.signal_.g, root.signal_.b, 0.6)
-                       : Qt.rgba(root.bright.r, root.bright.g, root.bright.b, 0.14)
-                Behavior on color { ColorAnimation { duration: 300 } }
-            }
+                id: panel
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: root.atTop ? 0 : parent.height - height
+                width: win.panelW
+                readonly property int targetH: body.implicitHeight + 20
+                height: win.expanded ? targetH : 0
+                topLeftRadius:     root.atTop ? 0 : 12
+                topRightRadius:    root.atTop ? 0 : 12
+                bottomLeftRadius:  root.atTop ? 12 : 0
+                bottomRightRadius: root.atTop ? 12 : 0
+                clip: true
 
-            // The clock, riding the panel's own top edge rather than taking up
-            // room inside it. Only visible while the panel is showing itself
-            // unasked, which is the only time it is about to leave unasked.
-            Rectangle {
-                anchors { left: parent.left; top: parent.top }
-                height: 2
-                width: parent.width * root.announceFrac
-                visible: root.announcing
-                color: root.signal_
-            }
+                // Lit from the edge it emerges from, like the lanes. A single flat
+                // slab of #1a1b26 is what made the panel read as a screenshot of a
+                // panel.
+                gradient: Gradient {
+                    GradientStop { position: 0.0
+                        color: root.atTop ? root.ink : Qt.lighter(root.base, 1.30) }
+                    GradientStop { position: 0.5; color: root.base }
+                    GradientStop { position: 1.0
+                        color: root.atTop ? Qt.lighter(root.base, 1.30) : root.ink }
+                }
 
-            ColumnLayout {
-                id: body
-                anchors { left: parent.left; right: parent.right; top: parent.top
-                          topMargin: 11; leftMargin: 0; rightMargin: 0 }
-                spacing: 0
+                visible: height > 0
+                // No opacity fade. The panel rises out of the bar and the bar is
+                // still there underneath; fading it in as well made two surfaces
+                // out of what should read as one.
+                Behavior on height {
+                    NumberAnimation { duration: 260; easing.type: Easing.OutBack
+                                      easing.overshoot: 0.9 }
+                }
 
-                Repeater {
-                    model: root.sessions
-                    delegate: ColumnLayout {
-                        id: row
-                        required property var modelData
-                        required property int index
-                        readonly property var pend: modelData.pending
-                        readonly property string st: modelData.status || "idle"
-                        // Set on click so the row can acknowledge the answer.
-                        // The feed removes the request about 250ms later, which
-                        // is just enough for the confirmation to land.
-                        property string decided: ""
-                        Layout.fillWidth: true
-                        spacing: 0
+                Rectangle {
+                    anchors { left: parent.left; right: parent.right }
+                    height: 1
+                    y: root.atTop ? parent.height - height : 0
+                    color: root.askingCount > 0
+                           ? Qt.rgba(root.signal_.r, root.signal_.g, root.signal_.b, 0.6)
+                           : Qt.rgba(root.bright.r, root.bright.g, root.bright.b, 0.14)
+                    Behavior on color { ColorAnimation { duration: 300 } }
+                }
 
-                        // One orchestrated reveal: rows come up in sequence
-                        // rather than the whole panel arriving at once, which
-                        // gives the eye an order to read them in.
-                        opacity: root.expanded ? 1 : 0
-                        Behavior on opacity {
-                            SequentialAnimation {
-                                PauseAnimation { duration: row.index * 45 }
-                                NumberAnimation { duration: 200; easing.type: Easing.OutCubic }
-                            }
-                        }
-                        transform: Translate {
-                            y: root.expanded ? 0 : 7
-                            Behavior on y {
+                // The clock, riding the panel's own inner edge rather than taking
+                // up room inside it. Only visible while the panel is showing itself
+                // unasked, which is the only time it is about to leave unasked.
+                Rectangle {
+                    anchors.left: parent.left
+                    height: 2
+                    y: root.atTop ? parent.height - height : 0
+                    width: parent.width * root.announceFrac
+                    visible: root.announcing
+                    color: root.signal_
+                }
+
+                ColumnLayout {
+                    id: body
+                    anchors { left: parent.left; right: parent.right; top: parent.top
+                              topMargin: 11; leftMargin: 0; rightMargin: 0 }
+                    spacing: 0
+
+                    Repeater {
+                        model: root.sessions
+                        delegate: ColumnLayout {
+                            id: row
+                            required property var modelData
+                            required property int index
+                            readonly property var pend: modelData.pending
+                            readonly property string st: modelData.status || "idle"
+                            // Set on click so the row can acknowledge the answer.
+                            // The feed removes the request about 250ms later, which
+                            // is just enough for the confirmation to land.
+                            property string decided: ""
+                            Layout.fillWidth: true
+                            spacing: 0
+
+                            // One orchestrated reveal: rows come up in sequence
+                            // rather than the whole panel arriving at once, which
+                            // gives the eye an order to read them in.
+                            opacity: win.expanded ? 1 : 0
+                            Behavior on opacity {
                                 SequentialAnimation {
                                     PauseAnimation { duration: row.index * 45 }
-                                    NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
+                                    NumberAnimation { duration: 200; easing.type: Easing.OutCubic }
                                 }
                             }
-                        }
-
-                        Rectangle {
-                            visible: index > 0
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 1
-                            Layout.leftMargin: 14
-                            Layout.rightMargin: 14
-                            Layout.topMargin: 3
-                            Layout.bottomMargin: 3
-                            color: root.edge
-                        }
-
-                        Rectangle {
-                            Layout.fillWidth: true
-                            implicitHeight: rowCol.implicitHeight + 18
-                            // Only the blocked session gets a ground, and it
-                            // is warm rather than a neutral lift -- the same
-                            // rationed hue as the lane, so the row that wants
-                            // you is the one warm thing on the panel.
-                            // On a click it takes the answer's colour for a
-                            // moment: you should see the decision land, not
-                            // just watch the row disappear a beat later.
-                            color: {
-                                if (row.decided === "allow")
-                                    return Qt.rgba(root.yes.r, root.yes.g, root.yes.b, 0.22);
-                                if (row.decided === "deny")
-                                    return Qt.rgba(root.no.r, root.no.g, root.no.b, 0.22);
-                                return pend ? Qt.rgba(root.signal_.r, root.signal_.g, root.signal_.b, 0.09)
-                                            : "transparent";
+                            transform: Translate {
+                                y: win.expanded ? 0 : (root.atTop ? -7 : 7)
+                                Behavior on y {
+                                    SequentialAnimation {
+                                        PauseAnimation { duration: row.index * 45 }
+                                        NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
+                                    }
+                                }
                             }
-                            Behavior on color { ColorAnimation { duration: 130 } }
 
-                            ColumnLayout {
-                                id: rowCol
-                                anchors { left: parent.left; right: parent.right; top: parent.top
-                                          leftMargin: 14; rightMargin: 14; topMargin: 9 }
-                                spacing: 3
+                            Rectangle {
+                                visible: index > 0
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 1
+                                Layout.leftMargin: 14
+                                Layout.rightMargin: 14
+                                Layout.topMargin: 3
+                                Layout.bottomMargin: 3
+                                color: root.edge
+                            }
 
-                                // Title and location belong together -- which
-                                // project this is answers "whose session?"
-                                // faster than the name alone.
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    spacing: 8
-                                    Text {
-                                        text: modelData.title
-                                        color: root.bright
-                                        elide: Text.ElideRight
+                            Rectangle {
+                                Layout.fillWidth: true
+                                implicitHeight: rowCol.implicitHeight + 18
+                                // Only the blocked session gets a ground, and it
+                                // is warm rather than a neutral lift -- the same
+                                // rationed hue as the lane, so the row that wants
+                                // you is the one warm thing on the panel.
+                                // On a click it takes the answer's colour for a
+                                // moment: you should see the decision land, not
+                                // just watch the row disappear a beat later.
+                                color: {
+                                    if (row.decided === "allow")
+                                        return Qt.rgba(root.yes.r, root.yes.g, root.yes.b, 0.22);
+                                    if (row.decided === "deny")
+                                        return Qt.rgba(root.no.r, root.no.g, root.no.b, 0.22);
+                                    return pend ? Qt.rgba(root.signal_.r, root.signal_.g, root.signal_.b, 0.09)
+                                                : "transparent";
+                                }
+                                Behavior on color { ColorAnimation { duration: 130 } }
+
+                                // Declared before the content so it sits underneath
+                                // it: the buttons and the reason box take their own
+                                // clicks, and everything else falls through to here.
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                    onClicked: function (m) {
+                                        if (m.button === Qt.RightButton)
+                                            root.settingsOpen = true;
+                                        else
+                                            root.focusSession(row.modelData.pid);
+                                    }
+                                }
+
+                                ColumnLayout {
+                                    id: rowCol
+                                    anchors { left: parent.left; right: parent.right; top: parent.top
+                                              leftMargin: 14; rightMargin: 14; topMargin: 9 }
+                                    spacing: 3
+
+                                    // Title and location belong together -- which
+                                    // project this is answers "whose session?"
+                                    // faster than the name alone.
+                                    RowLayout {
                                         Layout.fillWidth: true
-                                        font { family: root.sans; pixelSize: 13; weight: Font.DemiBold }
+                                        spacing: 8
+                                        Text {
+                                            text: modelData.title
+                                            color: root.bright
+                                            elide: Text.ElideRight
+                                            Layout.fillWidth: true
+                                            font { family: root.sans; pixelSize: 13; weight: Font.DemiBold }
+                                        }
+                                        Text {
+                                            text: modelData.dir
+                                            color: root.muted
+                                            font { family: root.mono; pixelSize: 10 }
+                                        }
                                     }
-                                    Text {
-                                        text: modelData.dir
-                                        color: root.muted
-                                        font { family: root.mono; pixelSize: 10 }
-                                    }
-                                }
 
-                                // One timer per line, and the live one carries
-                                // the status it belongs to. Two bare durations
-                                // side by side told you nothing about either.
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    spacing: 8
-                                    Text {
-                                        // A waiting with no request behind it is
-                                        // Claude Code prompting in its own
-                                        // terminal -- the island was told it is
-                                        // happening but has nothing to answer
-                                        // with, and showing a bare "waiting"
-                                        // with no buttons reads as a dead alert.
-                                        text: pend ? ("wants " + pend.tool)
-                                                   : (st === "waiting" ? "waiting in terminal" : st)
-                                        color: root.statusInk(st)
-                                        Behavior on color { ColorAnimation { duration: 280 } }
-                                        font { family: root.mono; pixelSize: 10
-                                               weight: root.statusBusy(st) ? Font.Medium : Font.Normal }
+                                    // One timer per line, and the live one carries
+                                    // the status it belongs to. Two bare durations
+                                    // side by side told you nothing about either.
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 8
+                                        Text {
+                                            // A waiting with no request behind it is
+                                            // Claude Code prompting in its own
+                                            // terminal -- the island was told it is
+                                            // happening but has nothing to answer
+                                            // with, and showing a bare "waiting"
+                                            // with no buttons reads as a dead alert.
+                                            text: pend ? ("wants " + pend.tool)
+                                                       : (st === "waiting" ? "waiting in terminal" : st)
+                                            color: root.statusInk(st)
+                                            Behavior on color { ColorAnimation { duration: 280 } }
+                                            font { family: root.mono; pixelSize: 10
+                                                   weight: root.statusBusy(st) ? Font.Medium : Font.Normal }
+                                        }
+                                        Text {
+                                            text: root.elapsed(modelData.since)
+                                            color: root.statusBusy(st) ? root.text : root.muted
+                                            font { family: root.mono; pixelSize: 10 }
+                                        }
+                                        Item { Layout.fillWidth: true }
+                                        Text {
+                                            visible: modelData.pmode !== ""
+                                            text: modelData.pmode
+                                            color: modelData.pmode === "bypassPermissions" ? root.no : root.muted
+                                            font { family: root.mono; pixelSize: 9 }
+                                        }
+                                        // A session that has fanned out is doing
+                                        // more than its own status suggests, and
+                                        // that is worth seeing before you judge how
+                                        // long it has been busy.
+                                        Text {
+                                            visible: modelData.agents > 0
+                                            text: modelData.agents + (modelData.agents === 1 ? " agent" : " agents")
+                                            color: root.flow
+                                            font { family: root.mono; pixelSize: 9 }
+                                        }
+                                        Text {
+                                            visible: modelData.model !== ""
+                                            text: root.shortModel(modelData.model)
+                                            color: root.muted
+                                            font { family: root.mono; pixelSize: 9 }
+                                        }
+                                        Text {
+                                            visible: modelData.turn_ms > 0 && !pend
+                                            text: "last turn " + root.shortMs(modelData.turn_ms)
+                                            color: root.muted
+                                            font { family: root.mono; pixelSize: 9 }
+                                        }
                                     }
-                                    Text {
-                                        text: root.elapsed(modelData.since)
-                                        color: root.statusBusy(st) ? root.text : root.muted
-                                        font { family: root.mono; pixelSize: 10 }
-                                    }
-                                    Item { Layout.fillWidth: true }
-                                    Text {
-                                        visible: modelData.pmode !== ""
-                                        text: modelData.pmode
-                                        color: modelData.pmode === "bypassPermissions" ? root.no : root.muted
-                                        font { family: root.mono; pixelSize: 9 }
-                                    }
-                                    // A session that has fanned out is doing
-                                    // more than its own status suggests, and
-                                    // that is worth seeing before you judge how
-                                    // long it has been busy.
-                                    Text {
-                                        visible: modelData.agents > 0
-                                        text: modelData.agents + (modelData.agents === 1 ? " agent" : " agents")
-                                        color: root.flow
-                                        font { family: root.mono; pixelSize: 9 }
-                                    }
-                                    Text {
-                                        visible: modelData.model !== ""
-                                        text: root.shortModel(modelData.model)
-                                        color: root.muted
-                                        font { family: root.mono; pixelSize: 9 }
-                                    }
-                                    Text {
-                                        visible: modelData.turn_ms > 0 && !pend
-                                        text: "last turn " + root.shortMs(modelData.turn_ms)
-                                        color: root.muted
-                                        font { family: root.mono; pixelSize: 9 }
-                                    }
-                                }
 
-                                Text {
-                                    visible: !pend && modelData.last !== ""
-                                    Layout.fillWidth: true
-                                    Layout.topMargin: 4
-                                    text: modelData.last
-                                    // Light rather than dim: the prompt is the
-                                    // one line you actually read, so it keeps
-                                    // its contrast and gives up weight instead.
-                                    color: root.text
-                                    wrapMode: Text.Wrap
-                                    maximumLineCount: 2
-                                    elide: Text.ElideRight
-                                    font { family: root.sans; pixelSize: 11; weight: Font.Light }
-                                }
-
-                                Text {
-                                    visible: !!pend
-                                    Layout.fillWidth: true
-                                    Layout.topMargin: 4
-                                    text: pend ? pend.body : ""
-                                    color: root.text
-                                    wrapMode: Text.Wrap
-                                    maximumLineCount: 4
-                                    elide: Text.ElideRight
-                                    font { family: root.mono; pixelSize: 11 }
-                                }
-
-                                Text {
-                                    // Says where the answer has to go, so you are
-                                    // not hunting the panel for a button.
-                                    visible: !pend && st === "waiting"
-                                    Layout.fillWidth: true
-                                    Layout.topMargin: 3
-                                    text: "Answer it in the terminal — this prompt did not come through the island."
-                                    color: root.signal_
-                                    wrapMode: Text.Wrap
-                                    font { family: root.sans; pixelSize: 11 }
-                                }
-
-                                // Optional note back to Claude. On a deny this
-                                // is the useful half -- "not on prod, use the
-                                // stage profile" tells it what to do instead,
-                                // where a bare refusal just makes it guess.
-                                Rectangle {
-                                    visible: !!pend
-                                    Layout.fillWidth: true
-                                    Layout.topMargin: 7
-                                    implicitHeight: 27
-                                    radius: 6
-                                    color: Qt.rgba(0, 0, 0, 0.22)
-                                    border.width: 1
-                                    border.color: why.activeFocus
-                                        ? Qt.rgba(root.signal_.r, root.signal_.g, root.signal_.b, 0.55)
-                                        : root.edge
-                                    Behavior on border.color { ColorAnimation { duration: 120 } }
-
-                                    TextInput {
-                                        id: why
-                                        anchors { fill: parent; leftMargin: 8; rightMargin: 8 }
-                                        verticalAlignment: TextInput.AlignVCenter
+                                    Text {
+                                        visible: !pend && modelData.last !== ""
+                                        Layout.fillWidth: true
+                                        Layout.topMargin: 4
+                                        text: modelData.last
+                                        // Light rather than dim: the prompt is the
+                                        // one line you actually read, so it keeps
+                                        // its contrast and gives up weight instead.
                                         color: root.text
-                                        selectionColor: Qt.rgba(root.signal_.r, root.signal_.g, root.signal_.b, 0.35)
-                                        selectedTextColor: root.bright
-                                        selectByMouse: true
-                                        clip: true
-                                        maximumLength: 400
-                                        font { family: root.sans; pixelSize: 11 }
-                                        // Deliberately does nothing on Enter.
-                                        // Two buttons means Enter has no
-                                        // unambiguous target, and guessing one
-                                        // is how a keystroke becomes an approval.
-                                        Keys.onEscapePressed: focus = false
+                                        wrapMode: Text.Wrap
+                                        maximumLineCount: 2
+                                        elide: Text.ElideRight
+                                        font { family: root.sans; pixelSize: 11; weight: Font.Light }
                                     }
-                                    Text {
-                                        anchors { fill: parent; leftMargin: 8; rightMargin: 8 }
-                                        verticalAlignment: Text.AlignVCenter
-                                        visible: why.text === "" && !why.activeFocus
-                                        text: "Reason (optional) — sent back to Claude"
-                                        color: root.muted
-                                        font { family: root.sans; pixelSize: 11 }
-                                    }
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        cursorShape: Qt.IBeamCursor
-                                        acceptedButtons: Qt.LeftButton
-                                        onClicked: function (m) { why.forceActiveFocus(); }
-                                        z: -1
-                                    }
-                                }
 
-                                RowLayout {
-                                    visible: !!pend
-                                    Layout.fillWidth: true
-                                    Layout.topMargin: 6
-                                    spacing: 8
                                     Text {
-                                        text: root.tilde(modelData.cwd)
-                                        color: root.muted
-                                        elide: Text.ElideLeft
+                                        visible: !!pend
                                         Layout.fillWidth: true
-                                        font { family: root.mono; pixelSize: 9 }
+                                        Layout.topMargin: 4
+                                        text: pend ? pend.body : ""
+                                        color: root.text
+                                        wrapMode: Text.Wrap
+                                        maximumLineCount: 4
+                                        elide: Text.ElideRight
+                                        font { family: root.mono; pixelSize: 11 }
                                     }
-                                    Repeater {
-                                        model: [
-                                            { label: "Deny",  answer: "deny",  col: root.no },
-                                            { label: "Allow", answer: "allow", col: root.yes }
-                                        ]
-                                        delegate: Rectangle {
-                                            id: btn
-                                            required property var modelData
-                                            readonly property bool chosen: row.decided === modelData.answer
-                                            readonly property bool dropped: row.decided !== "" && !chosen
-                                            radius: 6
-                                            implicitWidth: bt.implicitWidth + 24
-                                            implicitHeight: 25
-                                            color: Qt.rgba(modelData.col.r, modelData.col.g, modelData.col.b,
-                                                           chosen ? 0.9 : (bma.containsMouse ? 0.22 : 0.10))
-                                            border.width: 1
-                                            border.color: Qt.rgba(modelData.col.r, modelData.col.g, modelData.col.b,
-                                                                  chosen ? 1.0 : (bma.containsMouse ? 0.7 : 0.35))
-                                            // The button not taken steps back
-                                            // rather than vanishing, so the one
-                                            // you picked is unambiguous.
-                                            opacity: dropped ? 0.25 : 1
-                                            scale: chosen ? 1.06 : (bma.containsMouse ? 1.03 : 1.0)
-                                            Behavior on color        { ColorAnimation  { duration: 120 } }
-                                            Behavior on border.color { ColorAnimation  { duration: 120 } }
-                                            Behavior on opacity      { NumberAnimation { duration: 120 } }
-                                            Behavior on scale {
-                                                NumberAnimation { duration: 150; easing.type: Easing.OutBack
-                                                                  easing.overshoot: 2.5 }
-                                            }
-                                            Text {
-                                                id: bt
-                                                anchors.centerIn: parent
-                                                text: modelData.label
-                                                // Fills solid on the answer, so
-                                                // the label flips to read against
-                                                // it rather than disappearing.
-                                                color: btn.chosen ? root.ink : modelData.col
-                                                Behavior on color { ColorAnimation { duration: 120 } }
-                                                font { family: root.sans; pixelSize: 12; weight: Font.DemiBold }
-                                            }
-                                            MouseArea {
-                                                id: bma
-                                                anchors.fill: parent
-                                                hoverEnabled: true
-                                                cursorShape: Qt.PointingHandCursor
-                                                enabled: row.decided === ""
-                                                onClicked: {
-                                                    row.decided = modelData.answer;
-                                                    root.decide(pend.id, modelData.answer, why.text);
+
+                                    Text {
+                                        // Says where the answer has to go, so you are
+                                        // not hunting the panel for a button.
+                                        visible: !pend && st === "waiting"
+                                        Layout.fillWidth: true
+                                        Layout.topMargin: 3
+                                        text: "Answer it in the terminal — this prompt did not come through the island."
+                                        color: root.signal_
+                                        wrapMode: Text.Wrap
+                                        font { family: root.sans; pixelSize: 11 }
+                                    }
+
+                                    // Optional note back to Claude. On a deny this
+                                    // is the useful half -- "not on prod, use the
+                                    // stage profile" tells it what to do instead,
+                                    // where a bare refusal just makes it guess.
+                                    Rectangle {
+                                        visible: !!pend
+                                        Layout.fillWidth: true
+                                        Layout.topMargin: 7
+                                        implicitHeight: 27
+                                        radius: 6
+                                        color: Qt.rgba(0, 0, 0, 0.22)
+                                        border.width: 1
+                                        border.color: why.activeFocus
+                                            ? Qt.rgba(root.signal_.r, root.signal_.g, root.signal_.b, 0.55)
+                                            : root.edge
+                                        Behavior on border.color { ColorAnimation { duration: 120 } }
+
+                                        TextInput {
+                                            id: why
+                                            anchors { fill: parent; leftMargin: 8; rightMargin: 8 }
+                                            verticalAlignment: TextInput.AlignVCenter
+                                            color: root.text
+                                            selectionColor: Qt.rgba(root.signal_.r, root.signal_.g, root.signal_.b, 0.35)
+                                            selectedTextColor: root.bright
+                                            selectByMouse: true
+                                            clip: true
+                                            maximumLength: 400
+                                            font { family: root.sans; pixelSize: 11 }
+                                            // Deliberately does nothing on Enter.
+                                            // Two buttons means Enter has no
+                                            // unambiguous target, and guessing one
+                                            // is how a keystroke becomes an approval.
+                                            Keys.onEscapePressed: focus = false
+                                        }
+                                        Text {
+                                            anchors { fill: parent; leftMargin: 8; rightMargin: 8 }
+                                            verticalAlignment: Text.AlignVCenter
+                                            visible: why.text === "" && !why.activeFocus
+                                            text: "Reason (optional) — sent back to Claude"
+                                            color: root.muted
+                                            font { family: root.sans; pixelSize: 11 }
+                                        }
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.IBeamCursor
+                                            acceptedButtons: Qt.LeftButton
+                                            onClicked: function (m) { why.forceActiveFocus(); }
+                                            z: -1
+                                        }
+                                    }
+
+                                    RowLayout {
+                                        visible: !!pend
+                                        Layout.fillWidth: true
+                                        Layout.topMargin: 6
+                                        spacing: 8
+                                        Text {
+                                            text: root.tilde(modelData.cwd)
+                                            color: root.muted
+                                            elide: Text.ElideLeft
+                                            Layout.fillWidth: true
+                                            font { family: root.mono; pixelSize: 9 }
+                                        }
+                                        Repeater {
+                                            model: [
+                                                { label: "Deny",  answer: "deny",  col: root.no },
+                                                { label: "Allow", answer: "allow", col: root.yes }
+                                            ]
+                                            delegate: Rectangle {
+                                                id: btn
+                                                required property var modelData
+                                                readonly property bool chosen: row.decided === modelData.answer
+                                                readonly property bool dropped: row.decided !== "" && !chosen
+                                                radius: 6
+                                                implicitWidth: bt.implicitWidth + 24
+                                                implicitHeight: 25
+                                                color: Qt.rgba(modelData.col.r, modelData.col.g, modelData.col.b,
+                                                               chosen ? 0.9 : (bma.containsMouse ? 0.22 : 0.10))
+                                                border.width: 1
+                                                border.color: Qt.rgba(modelData.col.r, modelData.col.g, modelData.col.b,
+                                                                      chosen ? 1.0 : (bma.containsMouse ? 0.7 : 0.35))
+                                                // The button not taken steps back
+                                                // rather than vanishing, so the one
+                                                // you picked is unambiguous.
+                                                opacity: dropped ? 0.25 : 1
+                                                scale: chosen ? 1.06 : (bma.containsMouse ? 1.03 : 1.0)
+                                                Behavior on color        { ColorAnimation  { duration: 120 } }
+                                                Behavior on border.color { ColorAnimation  { duration: 120 } }
+                                                Behavior on opacity      { NumberAnimation { duration: 120 } }
+                                                Behavior on scale {
+                                                    NumberAnimation { duration: 150; easing.type: Easing.OutBack
+                                                                      easing.overshoot: 2.5 }
+                                                }
+                                                Text {
+                                                    id: bt
+                                                    anchors.centerIn: parent
+                                                    text: modelData.label
+                                                    // Fills solid on the answer, so
+                                                    // the label flips to read against
+                                                    // it rather than disappearing.
+                                                    color: btn.chosen ? root.ink : modelData.col
+                                                    Behavior on color { ColorAnimation { duration: 120 } }
+                                                    font { family: root.sans; pixelSize: 12; weight: Font.DemiBold }
+                                                }
+                                                MouseArea {
+                                                    id: bma
+                                                    anchors.fill: parent
+                                                    hoverEnabled: true
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    enabled: row.decided === ""
+                                                    onClicked: {
+                                                        row.decided = modelData.answer;
+                                                        root.decide(pend.id, modelData.answer, why.text);
+                                                    }
                                                 }
                                             }
                                         }
@@ -889,51 +1056,51 @@ ShellRoot {
                             }
                         }
                     }
-                }
 
-                // ------------------------------------------------- limits
-                Rectangle {
-                    visible: !!root.usage
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 1
-                    Layout.leftMargin: 14
-                    Layout.rightMargin: 14
-                    Layout.topMargin: 8
-                    color: root.edge
-                }
-
-                RowLayout {
-                    visible: !!root.usage
-                    Layout.fillWidth: true
-                    Layout.leftMargin: 14
-                    Layout.rightMargin: 14
-                    Layout.topMargin: 9
-                    Layout.bottomMargin: 1
-                    spacing: 18
-
-                    LimitBar {
+                    // ------------------------------------------------- limits
+                    Rectangle {
+                        visible: !!root.usage
                         Layout.fillWidth: true
-                        label: "5h"
-                        d: root.usage ? root.usage.session : null
+                        Layout.preferredHeight: 1
+                        Layout.leftMargin: 14
+                        Layout.rightMargin: 14
+                        Layout.topMargin: 8
+                        color: root.edge
                     }
-                    LimitBar {
-                        Layout.fillWidth: true
-                        label: "7d"
-                        d: root.usage ? root.usage.week : null
-                    }
-                }
 
-                Text {
-                    // The cache only refreshes while a session renders its status
-                    // line, so say so rather than showing stale numbers as live.
-                    readonly property double staleFor:
-                        root.usage ? root.usage.age + Math.max(0, root.clock - root.usageAt) : 0
-                    visible: !!root.usage && staleFor > 120
-                    Layout.leftMargin: 14
-                    Layout.topMargin: 4
-                    text: "limits last read " + Math.round(staleFor / 60) + "m ago"
-                    color: root.muted
-                    font { family: root.sans; pixelSize: 10 }
+                    RowLayout {
+                        visible: !!root.usage
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 14
+                        Layout.rightMargin: 14
+                        Layout.topMargin: 9
+                        Layout.bottomMargin: 1
+                        spacing: 18
+
+                        LimitBar {
+                            Layout.fillWidth: true
+                            label: "5h"
+                            d: root.usage ? root.usage.session : null
+                        }
+                        LimitBar {
+                            Layout.fillWidth: true
+                            label: "7d"
+                            d: root.usage ? root.usage.week : null
+                        }
+                    }
+
+                    Text {
+                        // The cache only refreshes while a session renders its status
+                        // line, so say so rather than showing stale numbers as live.
+                        readonly property double staleFor:
+                            root.usage ? root.usage.age + Math.max(0, root.clock - root.usageAt) : 0
+                        visible: !!root.usage && staleFor > 120
+                        Layout.leftMargin: 14
+                        Layout.topMargin: 4
+                        text: "limits last read " + Math.round(staleFor / 60) + "m ago"
+                        color: root.muted
+                        font { family: root.sans; pixelSize: 10 }
+                    }
                 }
             }
         }
