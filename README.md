@@ -5,23 +5,33 @@ compositors. Every live session gets a lane along the bottom edge of the screen;
 hover for detail, and answer permission prompts with a click instead of switching
 to the terminal that raised them.
 
-```
-                    ▁▁▁▁  ████  ▁▁▁▁▁▁
-                     ^      ^      ^
-                   idle  wants   thinking
-                          you
-```
+<img src="docs/bar.png" width="620" alt="Three lanes along the bottom edge: cyan, violet, and a flat dark one">
 
 Lane **height** says what is happening — 2px idle, 5px working, 8px blocked on
 you — so the bar reads out of the corner of your eye without relying on colour.
 Colour says which kind of working: cyan is a tool or text being produced, violet
-is the model thinking, orange means it wants you, red means the turn died.
+is the model thinking, orange means it wants you, red means the turn died. Above:
+one session running a tool, one thinking, one idle.
 
-Hovering grows it into a panel with the session title, what it is doing and for
-how long, the last thing you asked it, agent count, model, and your 5h/7d usage.
-When a session needs permission the panel opens itself for five seconds, shows
-the command with Allow/Deny and an optional reason, then folds back to the bar
-and leaves the lane pulsing until you deal with it.
+<img src="docs/glow.png" width="620" alt="The third lane is now tall and orange, with a warm glow around it">
+
+When a session is blocked on you the lane stands up, turns orange and pulses.
+It is the only warm thing on the bar, so nothing else has to compete with it.
+
+<img src="docs/panel.png" width="700" alt="The expanded panel listing three sessions with titles, status, prompts and usage bars">
+
+Hover and it grows into a panel: the session title, what it is doing and for how
+long, the last thing you asked it, agent count, model, and your 5h/7d usage.
+
+<img src="docs/approve.png" width="700" alt="The panel showing a pending Bash command with a reason field and Deny/Allow buttons">
+
+A permission prompt opens the panel on its own and shows the command with
+Allow/Deny and an optional reason back to Claude. The orange rule across the top
+is a five-second clock: when it runs out the panel folds back to the bar and the
+lane keeps pulsing until you deal with it. Hovering takes it off the clock.
+
+<sup>Shot with `grim` against a blank desktop; the session data is made up, the
+surface is not.</sup>
 
 ## Requirements
 
