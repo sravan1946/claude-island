@@ -403,6 +403,11 @@ ShellRoot {
 
             property bool hovered: false
             readonly property bool expanded: hovered || root.announcing
+            // What the row under the cursor wants to say. It lives at the foot of
+            // the panel rather than inside the row, so nothing reflows and the
+            // panel does not change height as you read down it -- a panel that
+            // resizes under the pointer moves the thing you were pointing at.
+            property string hint: ""
             // Hover is exclusive: a hoverEnabled MouseArea sits above the
             // hitbox's own, so entering a control inside the panel tells the
             // hitbox the pointer LEFT the bar. Every control that wants hover
@@ -829,18 +834,51 @@ ShellRoot {
                                         return Qt.rgba(root.yes.r, root.yes.g, root.yes.b, 0.22);
                                     if (row.decided === "deny")
                                         return Qt.rgba(root.no.r, root.no.g, root.no.b, 0.22);
-                                    return pend ? Qt.rgba(root.signal_.r, root.signal_.g, root.signal_.b, 0.09)
-                                                : "transparent";
+                                    if (pend)
+                                        return Qt.rgba(root.signal_.r, root.signal_.g, root.signal_.b, 0.09);
+                                    // A lift rather than a tint: the row you are
+                                    // about to click should stand out without
+                                    // borrowing a colour that already means
+                                    // something on this panel.
+                                    return rowMa.containsMouse ? Qt.rgba(1, 1, 1, 0.045)
+                                                               : "transparent";
                                 }
                                 Behavior on color { ColorAnimation { duration: 130 } }
+
+                                // The row's own lane colour, on the edge the bar
+                                // would be on -- so a row under the cursor is tied
+                                // back to the lane it came from.
+                                Rectangle {
+                                    anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
+                                    width: 2
+                                    color: root.statusTone(row.st)
+                                    opacity: rowMa.containsMouse ? 1 : 0
+                                    Behavior on opacity { NumberAnimation { duration: 140 } }
+                                    Behavior on color { ColorAnimation { duration: 280 } }
+                                }
 
                                 // Declared before the content so it sits underneath
                                 // it: the buttons and the reason box take their own
                                 // clicks, and everything else falls through to here.
                                 MouseArea {
+                                    id: rowMa
                                     anchors.fill: parent
+                                    hoverEnabled: true
                                     cursorShape: Qt.PointingHandCursor
                                     acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                    onEntered: {
+                                        win.hold();
+                                        win.hint = row.modelData.pid
+                                            ? "Click to focus " + root.tilde(row.modelData.cwd)
+                                            : root.tilde(row.modelData.cwd);
+                                    }
+                                    onExited: {
+                                        win.release();
+                                        // Only clear what is still ours: moving to
+                                        // the next row sets the new hint first.
+                                        if (win.hint.indexOf(root.tilde(row.modelData.cwd)) >= 0)
+                                            win.hint = "";
+                                    }
                                     onClicked: function (m) {
                                         if (m.button === Qt.RightButton)
                                             root.settingsOpen = true;
@@ -1151,7 +1189,15 @@ ShellRoot {
                         Layout.bottomMargin: 1
                         spacing: 8
 
-                        Item { Layout.fillWidth: true }
+                        Text {
+                            Layout.fillWidth: true
+                            text: win.hint
+                            color: root.muted
+                            elide: Text.ElideMiddle
+                            opacity: win.hint === "" ? 0 : 1
+                            Behavior on opacity { NumberAnimation { duration: 140 } }
+                            font { family: root.sans; pixelSize: 10 }
+                        }
 
                         Text {
                             id: gear

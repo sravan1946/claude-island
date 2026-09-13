@@ -32,7 +32,8 @@ lane keeps pulsing until you deal with it. Hovering takes it off the clock.
 
 **Click a lane** and the terminal running that session comes to the front —
 across workspaces, and into the right tab when your terminal will say which one
-it is. **Right-click** anything, or click *settings* in the open panel, for
+it is. Hovering a row in the panel lifts it, marks it with its own lane colour,
+and prints where that session is working along the foot of the panel. **Right-click** anything, or click *settings* in the open panel, for
 theme, colours, position, size and which monitors. The bar is drawn on every
 screen, and takes a wider panel on a wider one.
 
