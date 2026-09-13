@@ -81,7 +81,7 @@ esac
 
 # ---- this checkout ----------------------------------------------------------
 head_ "files"
-for f in island.qml Settings.qml themes.js state.py status.sh approve.sh session.sh focus.sh; do
+for f in island.qml Settings.qml themes.js state.py status.sh approve.sh session.sh focus.sh settings.sh; do
 	if [[ ! -f $HERE/$f ]]; then
 		bad "missing $f"
 	elif [[ $f == *.sh || $f == *.py ]] && [[ ! -x $HERE/$f ]]; then
@@ -184,6 +184,31 @@ if command -v python3 >/dev/null && [[ -x $HERE/state.py ]]; then
 		fi
 	else
 		bad "state.py did not return valid JSON" "$(printf '%s' "$out" | tail -3)"
+	fi
+fi
+
+# ---- settings ---------------------------------------------------------------
+head_ "settings window"
+if command -v quickshell >/dev/null; then
+	if quickshell ipc -p "$HERE/island.qml" show 2>/dev/null | grep -q 'target settings'; then
+		ok "reachable: $HERE/settings.sh"
+	else
+		warn "the surface is not answering IPC" \
+		     "right-click the bar still works; settings.sh needs the service running"
+	fi
+fi
+
+# The tab a session lives in is only knowable from inside the terminal, so this
+# is the difference between focusing the window and focusing the right tab.
+if [[ ${TERM:-} == xterm-kitty ]]; then
+	if [[ -n ${KITTY_LISTEN_ON:-} ]]; then
+		ok "kitty remote control on -- click-to-focus can reach the exact tab"
+	else
+		warn "kitty has no remote control socket" \
+		     "clicking a lane raises the window but not the tab. Add to kitty.conf:
+         allow_remote_control socket-only
+         listen_on unix:@mykitty-{kitty_pid}
+       then restart kitty."
 	fi
 fi
 

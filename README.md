@@ -32,9 +32,9 @@ lane keeps pulsing until you deal with it. Hovering takes it off the clock.
 
 **Click a lane** and the terminal running that session comes to the front —
 across workspaces, and into the right tab when your terminal will say which one
-it is. **Right-click** anything for the settings window: theme, colours,
-position, size, which monitors. The bar is drawn on every screen, and takes a
-wider panel on a wider one.
+it is. **Right-click** anything, or click *settings* in the open panel, for
+theme, colours, position, size and which monitors. The bar is drawn on every
+screen, and takes a wider panel on a wider one.
 
 <sup>Shot with `grim` against a blank desktop; the session data is made up, the
 surface is not.</sup>
@@ -98,11 +98,21 @@ stopped daemon leaves the normal permission flow exactly as it was.
 
 ## Configuration
 
-Right-click the bar for the settings window — theme, colours, position, monitors,
-sizes, fonts. It writes `~/.config/claude-island/config.json`, which the surface
-watches, so a change lands as you make it. There is no apply button and no
-restart. (The bar hides itself when no session is open, so the right-click needs
-a session running; the file below works either way.)
+Three ways to the settings window — theme, colours, position, monitors, sizes,
+fonts:
+
+- **right-click** anywhere on the bar or the panel
+- click **settings** at the bottom of the open panel
+- run **`./settings.sh`** — the only route that works when no session is open,
+  since the surface hides itself when there is nothing to show. Bind it:
+
+  ```
+  # ~/.config/hypr/hyprland.conf
+  bind = SUPER SHIFT, I, exec, ~/dev/claude-island/settings.sh
+  ```
+
+It writes `~/.config/claude-island/config.json`, which the surface watches, so a
+change lands as you make it. There is no apply button and no restart.
 
 The file is also fine to edit by hand. Every key is optional; anything missing
 falls back to the default:
@@ -164,6 +174,7 @@ the hooks.
 | `approve.sh`   | `PreToolUse` hook: writes a request, blocks for the answer |
 | `session.sh`   | `SessionStart` / `SessionEnd` hook: registers the session |
 | `focus.sh`     | brings a session's terminal to the front, and its tab where it can |
+| `settings.sh`  | opens the settings window from outside — for a keybind |
 | `install.sh`   | dependency check, service, hook registration |
 | `doctor.sh`    | diagnoses a broken or partial install |
 
@@ -312,6 +323,18 @@ whatever is in there:
 | `TMUX` + `TMUX_PANE` | `tmux select-window` / `select-pane` on that socket — exact |
 | `KITTY_LISTEN_ON` + `KITTY_WINDOW_ID` | `kitty @ focus-window --match id:` — exact, but needs `allow_remote_control yes` and a `listen_on` socket in `kitty.conf` |
 | `WEZTERM_PANE` | `wezterm cli activate-pane` — exact |
+
+kitty is the one that needs setting up, because its socket is off by default.
+Add to `kitty.conf` and restart it:
+
+```
+allow_remote_control socket-only
+listen_on unix:@mykitty-{kitty_pid}
+```
+
+`socket-only` is the point of that pair: programs running *inside* kitty cannot
+drive it through escape codes, only something holding the socket path can.
+`doctor.sh` says which of the two you have.
 
 Without one of those you get the window and not the tab, which is still most of
 the way there. Nothing in stage two can fail loudly: a missing tool or a terminal

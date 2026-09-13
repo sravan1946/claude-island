@@ -60,8 +60,22 @@ ShellRoot {
         cfgFile.setText(JSON.stringify(root.cfg, null, 2) + "\n");
     }
 
-    // Right-click anything on the surface to open it.
+    // Right-click anything on the surface, click "settings" in the panel, or
+    // call in from outside -- the last one is the only route that works when no
+    // session is open, because the surface hides itself when there is nothing
+    // to show:
+    //
+    //   quickshell ipc -p <this dir>/island.qml call settings toggle
+    //
+    // settings.sh wraps that, so a keybind is one line.
     property bool settingsOpen: false
+
+    IpcHandler {
+        target: "settings"
+        function open(): void { root.settingsOpen = true; }
+        function close(): void { root.settingsOpen = false; }
+        function toggle(): void { root.settingsOpen = !root.settingsOpen; }
+    }
 
     Settings {
         isl: root
@@ -1100,6 +1114,36 @@ ShellRoot {
                         text: "limits last read " + Math.round(staleFor / 60) + "m ago"
                         color: root.muted
                         font { family: root.sans; pixelSize: 10 }
+                    }
+
+                    // The way in. Right-click works anywhere on the surface, but
+                    // a gesture nobody can see is a gesture nobody finds, so the
+                    // panel says so once it is open.
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 14
+                        Layout.rightMargin: 14
+                        Layout.topMargin: 9
+                        Layout.bottomMargin: 1
+                        spacing: 8
+
+                        Item { Layout.fillWidth: true }
+
+                        Text {
+                            id: gear
+                            text: "settings"
+                            color: gm.containsMouse ? root.bright : root.muted
+                            Behavior on color { ColorAnimation { duration: 120 } }
+                            font { family: root.sans; pixelSize: 10
+                                   underline: gm.containsMouse }
+                            MouseArea {
+                                id: gm
+                                anchors { fill: parent; margins: -6 }
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.settingsOpen = true
+                            }
+                        }
                     }
                 }
             }
