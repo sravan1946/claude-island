@@ -34,6 +34,11 @@ mkdir -p "$ROOT/requests" "$ROOT/decisions" || defer
 tool=$(jq -r '.tool_name  // empty' <<<"$payload")
 sid=$( jq -r '.session_id // empty' <<<"$payload")
 cwd=$( jq -r '.cwd        // empty' <<<"$payload")
+# Logged, because it is the one thing that says whether a session is running the
+# registration this script expects. A session started before the grant moved
+# keeps the hooks it was launched with, and the symptom -- being asked about
+# calls nobody wanted gated -- looks identical to a bug in here.
+ev=$(  jq -r '.hook_event_name // "?"' <<<"$payload")
 [[ -n $tool ]] || defer
 # This event carries no tool_use_id -- the id only has to be unique and agreed
 # between this script and the surface, so a local one is fine.
@@ -71,7 +76,7 @@ fi
 rm -f "$dec"
 trap 'rm -f "$req" "$dec"' EXIT
 
-log "ASK tool=$tool sid=${sid:0:6} body=${body:0:60}"
+log "ASK on=$ev tool=$tool sid=${sid:0:6} body=${body:0:60}"
 jq -nc --arg s "$sid" --arg t "$tool" --arg b "$body" --arg c "$cwd" \
        --argjson ts "$(date +%s)" \
 	'{session_id:$s, tool:$t, body:$b, cwd:$c, ts:$ts}' > "$req" || defer
