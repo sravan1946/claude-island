@@ -93,22 +93,36 @@ jq -nc --arg s "$sid" --arg t "$tool" --arg b "$body" --arg c "$cwd" \
 # never approve anything; it just takes the row off the panel and leaves the
 # terminal to it.
 #
-# MessageDisplay is in the list because a refusal typed in the terminal has no
-# tool to finish: Claude simply starts answering, and a turn cannot stream text
-# while it is blocked on a call waiting for permission. What none of them can
-# be is the moment the answer was given -- no event fires there -- so an
-# allowed long-running command keeps its row until it finishes.
+# Two things have to be true before that reading is safe, and getting either
+# wrong pulls a live prompt off the panel half a second after it arrives.
+#
+# The evidence has to be NEW. The status file already holds whatever the session
+# last did, and what it last did is frequently one of these events -- the tool
+# before this one finished, and that is why there is a tool to ask about now. So
+# the file is remembered as it was when this request went up, and only a change
+# from that counts.
+#
+# And it has to be an event that cannot happen while a prompt is pending.
+# MessageDisplay is not one: the text of an assistant message keeps rendering
+# after the tool call inside it has gone out, so it landed a beat after every
+# request and took the row with it. A refusal typed in the terminal therefore
+# waits for the turn to end rather than being caught as it happens.
+#
+# None of them is the moment the answer was given -- no event fires there -- so
+# an allowed long-running command keeps its row until it finishes.
 live="$ROOT/live/$sid.json"
 start=$(date +%s)
+was=""
+[[ -r $live ]] && IFS= read -r was < "$live"
 answer=""
 reason=""
 for (( i = 0; i < TIMEOUT * 10; i++ )); do
 	if (( i % 10 == 9 )); then
 		[[ -e $req ]] || { log "GONE request went away"; defer; }
-		if [[ -r $live ]] && IFS= read -r state < "$live"; then
+		if [[ -r $live ]] && IFS= read -r state < "$live" && [[ $state != "$was" ]]; then
 			case $state in
 			*'"event":"PostToolUse"'*|*'"event":"PostToolUseFailure"'* \
-			|*'"event":"PostToolBatch"'*|*'"event":"MessageDisplay"'* \
+			|*'"event":"PostToolBatch"'* \
 			|*'"event":"Stop"'*|*'"event":"StopFailure"'*)
 				ts=${state##*\"ts\":}; ts=${ts%%,*}; ts=${ts%%\}*}
 				if [[ $ts =~ ^[0-9]+$ ]] && (( ts >= start )); then
