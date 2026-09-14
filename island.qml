@@ -93,8 +93,55 @@ ShellRoot {
     }
 
     property var sessions: []
-    property string sig: ""     // what `sessions` last drew; an identical feed
+    property string sig: ""     // what the lanes last drew; an identical feed
                             // line then costs nothing to re-apply
+
+    // What the delegates draw from. `sessions` is a fresh JS array every time
+    // the feed speaks, and a Repeater handed a new array throws away every
+    // delegate it has: one session changing status rebuilt the whole bar, so
+    // every lane rose from zero again, every colour arrived instead of
+    // crossfading, and every sheen restarted in lockstep. A ListModel can be
+    // edited in place, so a change reaches the lane it belongs to and the rest
+    // hold still. dynamicRoles because a session is a whole object, not a set
+    // of scalars.
+    ListModel { id: lanes; dynamicRoles: true }
+
+    // Reconciled against the feed by session id, in feed order -- state.py
+    // holds a session's place once it has one, so this is nearly always an
+    // in-place write to the single row that moved.
+    function applyFeed(ss) {
+        let sig = "";
+        for (let i = 0; i < ss.length; i++) {
+            const sess = ss[i];
+            const one = JSON.stringify(sess);
+            sig += one;
+            let at = -1;
+            for (let j = i; j < lanes.count; j++) {
+                if (lanes.get(j).sid === sess.id) { at = j; break; }
+            }
+            if (at < 0) {
+                lanes.insert(i, { sid: sess.id, sig: one, sess: sess });
+                continue;
+            }
+            if (at !== i)
+                lanes.move(at, i, 1);
+            // Only the session that actually changed is written back: assigning
+            // an identical object still re-runs every binding in its delegate.
+            if (lanes.get(i).sig !== one) {
+                lanes.setProperty(i, "sig", one);
+                lanes.setProperty(i, "sess", sess);
+            }
+        }
+        while (lanes.count > ss.length)
+            lanes.remove(lanes.count - 1);
+
+        // The array is still what the counts, the bar width and the announce
+        // clock read; it just no longer drives a delegate.
+        if (sig !== root.sig) {
+            root.sig = sig;
+            root.sessions = ss;
+        }
+    }
     property var usage: null
     // When the usage reading arrived. The feed no longer re-sends just because
     // the reading got a second older, so the surface ages it against its own
@@ -347,20 +394,7 @@ ShellRoot {
             onRead: function (line) {
                 try {
                     const d = JSON.parse(line);
-                    const ss = d.sessions || [];
-                    // Assigning a fresh array destroys and rebuilds every
-                    // delegate, which restarts the waiting pulse and replays
-                    // each width animation from zero -- five times a second.
-                    // Only swap the model in when something drawn changed.
-                    let sig = "";
-                    for (const x of ss)
-                        sig += [x.id, x.status, x.since, x.title, x.dir, x.last,
-                                x.pmode, x.turn_ms,
-                                x.pending ? x.pending.id : "-"].join("") + "\n";
-                    if (sig !== root.sig) {
-                        root.sig = sig;
-                        root.sessions = ss;
-                    }
+                    root.applyFeed(d.sessions || []);
                     root.usage = d.usage || null;
                     root.usageAt = root.clock;
                 } catch (e) { /* transient: a torn line */ }
@@ -586,11 +620,11 @@ ShellRoot {
                     spacing: root.laneGap
 
                     Repeater {
-                        model: root.sessions
+                        model: lanes
                         delegate: Item {
                             id: lane
-                            required property var modelData
-                            readonly property string st: modelData.status || "idle"
+                            required property var sess
+                            readonly property string st: sess.status || "idle"
                             // Not readonly and not inline in the gradient: a
                             // Gradient's stops cannot animate, so the crossfade has
                             // to happen on the colour the stops are derived from.
@@ -618,7 +652,7 @@ ShellRoot {
                                     if (m.button === Qt.RightButton)
                                         root.settingsOpen = true;
                                     else
-                                        root.focusSession(lane.modelData.pid);
+                                        root.focusSession(lane.sess.pid);
                                 }
                             }
 
@@ -815,27 +849,38 @@ ShellRoot {
                     spacing: 0
 
                     Repeater {
-                        model: root.sessions
+                        model: lanes
                         delegate: ColumnLayout {
                             id: row
-                            required property var modelData
+                            required property var sess
                             required property int index
-                            readonly property var pend: modelData.pending
-                            readonly property string st: modelData.status || "idle"
+                            readonly property var pend: sess.pending
+                            readonly property string st: sess.status || "idle"
                             // Set on click so the row can acknowledge the answer.
                             // The feed removes the request about 250ms later, which
                             // is just enough for the confirmation to land.
                             property string decided: ""
+                            // ...and then it has to be forgotten. The row is no
+                            // longer thrown away and rebuilt on every feed line, so
+                            // nothing else clears this: one answered request left
+                            // the next one on that session showing an answer it
+                            // never got, with both buttons dead.
+                            readonly property string pendId: pend ? pend.id : ""
+                            onPendIdChanged: decided = ""
                             Layout.fillWidth: true
                             spacing: 0
 
                             // One orchestrated reveal: rows come up in sequence
                             // rather than the whole panel arriving at once, which
-                            // gives the eye an order to read them in.
+                            // gives the eye an order to read them in. A row on its
+                            // way out of the model reports index -1, and a pause of
+                            // -45ms is a warning per frame, so the place in the
+                            // queue is floored rather than read raw.
+                            readonly property int place: Math.max(0, index)
                             opacity: win.expanded ? 1 : 0
                             Behavior on opacity {
                                 SequentialAnimation {
-                                    PauseAnimation { duration: row.index * 45 }
+                                    PauseAnimation { duration: row.place * 45 }
                                     NumberAnimation { duration: 200; easing.type: Easing.OutCubic }
                                 }
                             }
@@ -843,7 +888,7 @@ ShellRoot {
                                 y: win.expanded ? 0 : (root.atTop ? -7 : 7)
                                 Behavior on y {
                                     SequentialAnimation {
-                                        PauseAnimation { duration: row.index * 45 }
+                                        PauseAnimation { duration: row.place * 45 }
                                         NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
                                     }
                                 }
@@ -910,26 +955,26 @@ ShellRoot {
                                     onContainsMouseChanged: {
                                         if (containsMouse) {
                                             win.hold(rowMa);
-                                            win.hint = row.modelData.pid
-                                                ? "Click to focus " + root.tilde(row.modelData.cwd)
-                                                : root.tilde(row.modelData.cwd);
+                                            win.hint = row.sess.pid
+                                                ? "Click to focus " + root.tilde(row.sess.cwd)
+                                                : root.tilde(row.sess.cwd);
                                             return;
                                         }
                                         win.release(rowMa);
                                         // Only clear what is still ours: moving to
                                         // the next row sets the new hint first.
-                                        if (win.hint.indexOf(root.tilde(row.modelData.cwd)) >= 0)
+                                        if (win.hint.indexOf(root.tilde(row.sess.cwd)) >= 0)
                                             win.hint = "";
                                     }
-                                    // The feed rebuilds this row out from under the
-                                    // pointer on any change it draws; a destroyed
-                                    // area sends no exit, so give the claim back here.
+                                    // A session ending takes its row with it, pointer
+                                    // or no pointer, and a destroyed area sends no
+                                    // exit -- so give the claim back here.
                                     Component.onDestruction: win.release(rowMa)
                                     onClicked: function (m) {
                                         if (m.button === Qt.RightButton)
                                             root.settingsOpen = true;
                                         else
-                                            root.focusSession(row.modelData.pid);
+                                            root.focusSession(row.sess.pid);
                                     }
                                 }
 
@@ -946,14 +991,14 @@ ShellRoot {
                                         Layout.fillWidth: true
                                         spacing: 8
                                         Text {
-                                            text: modelData.title
+                                            text: sess.title
                                             color: root.bright
                                             elide: Text.ElideRight
                                             Layout.fillWidth: true
                                             font { family: root.sans; pixelSize: 13; weight: Font.DemiBold }
                                         }
                                         Text {
-                                            text: modelData.dir
+                                            text: sess.dir
                                             color: root.muted
                                             font { family: root.mono; pixelSize: 10 }
                                         }
@@ -980,15 +1025,15 @@ ShellRoot {
                                                    weight: root.statusBusy(st) ? Font.Medium : Font.Normal }
                                         }
                                         Text {
-                                            text: root.elapsed(modelData.since)
+                                            text: root.elapsed(sess.since)
                                             color: root.statusBusy(st) ? root.text : root.muted
                                             font { family: root.mono; pixelSize: 10 }
                                         }
                                         Item { Layout.fillWidth: true }
                                         Text {
-                                            visible: modelData.pmode !== ""
-                                            text: modelData.pmode
-                                            color: modelData.pmode === "bypassPermissions" ? root.no : root.muted
+                                            visible: sess.pmode !== ""
+                                            text: sess.pmode
+                                            color: sess.pmode === "bypassPermissions" ? root.no : root.muted
                                             font { family: root.mono; pixelSize: 9 }
                                         }
                                         // A session that has fanned out is doing
@@ -996,30 +1041,30 @@ ShellRoot {
                                         // that is worth seeing before you judge how
                                         // long it has been busy.
                                         Text {
-                                            visible: modelData.agents > 0
-                                            text: modelData.agents + (modelData.agents === 1 ? " agent" : " agents")
+                                            visible: sess.agents > 0
+                                            text: sess.agents + (sess.agents === 1 ? " agent" : " agents")
                                             color: root.flow
                                             font { family: root.mono; pixelSize: 9 }
                                         }
                                         Text {
-                                            visible: modelData.model !== ""
-                                            text: root.shortModel(modelData.model)
+                                            visible: sess.model !== ""
+                                            text: root.shortModel(sess.model)
                                             color: root.muted
                                             font { family: root.mono; pixelSize: 9 }
                                         }
                                         Text {
-                                            visible: modelData.turn_ms > 0 && !pend
-                                            text: "last turn " + root.shortMs(modelData.turn_ms)
+                                            visible: sess.turn_ms > 0 && !pend
+                                            text: "last turn " + root.shortMs(sess.turn_ms)
                                             color: root.muted
                                             font { family: root.mono; pixelSize: 9 }
                                         }
                                     }
 
                                     Text {
-                                        visible: !pend && modelData.last !== ""
+                                        visible: !pend && sess.last !== ""
                                         Layout.fillWidth: true
                                         Layout.topMargin: 4
-                                        text: modelData.last
+                                        text: sess.last
                                         // Light rather than dim: the prompt is the
                                         // one line you actually read, so it keeps
                                         // its contrast and gives up weight instead.
@@ -1111,7 +1156,7 @@ ShellRoot {
                                         Layout.topMargin: 6
                                         spacing: 8
                                         Text {
-                                            text: root.tilde(modelData.cwd)
+                                            text: root.tilde(sess.cwd)
                                             color: root.muted
                                             elide: Text.ElideLeft
                                             Layout.fillWidth: true

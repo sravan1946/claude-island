@@ -404,6 +404,24 @@ closes the expansion early, so `${v%%[,}]*}` silently parses as something else
 and quietly corrupted every file it touched; fields are trimmed one delimiter at
 a time instead.
 
+### One lane at a time
+
+The feed hands over a whole array of sessions, and a `Repeater` given a new JS
+array destroys every delegate it has and builds them again. That is invisible
+until the delegates have a memory: a lane rises from zero once when it appears,
+crossfades its colour, and carries a sheen and a heartbeat. Rebuilt, all of that
+restarts — so one session changing status flashed the entire bar, and answering
+a prompt reset the lane next to it.
+
+So the delegates draw from a `ListModel` that is reconciled against the feed by
+session id, not from the array. A session that changed is one `setProperty`, a
+session that did not is untouched, and a lane only rises from zero the once.
+Reconciling in place is also what makes the panel's hover claims safe: a row
+that is never destroyed under the pointer is a claim that always comes back.
+
+The array is still there — the counts, the bar width and the announce clock read
+it — it just no longer drives a delegate.
+
 ### What the feed costs
 
 `state.py --serve` runs once and stays. Each tick is a handful of `stat()` calls
