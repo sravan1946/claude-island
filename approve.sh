@@ -82,10 +82,17 @@ jq -nc --arg s "$sid" --arg t "$tool" --arg b "$body" --arg c "$cwd" \
 # the whole time this waits. Answer it there and the tool moves on with nothing
 # to tell this script, which went on blocking for the full five minutes with a
 # dead Allow/Deny sitting on the panel. So the session's own status is watched
-# too -- a tool finishing or a turn ending after this request went up means the
-# answer already happened somewhere else, and the only safe reading of that is
-# to stop waiting. Deferring can never approve anything; it just takes the row
-# off the panel and leaves the terminal to it.
+# too -- a tool finishing, the model talking again, or a turn ending, any of
+# them after this request went up, means the answer already happened somewhere
+# else, and the only safe reading of that is to stop waiting. Deferring can
+# never approve anything; it just takes the row off the panel and leaves the
+# terminal to it.
+#
+# MessageDisplay is in the list because a refusal typed in the terminal has no
+# tool to finish: Claude simply starts answering, and a turn cannot stream text
+# while it is blocked on a call waiting for permission. What none of them can
+# be is the moment the answer was given -- no event fires there -- so an
+# allowed long-running command keeps its row until it finishes.
 live="$ROOT/live/$sid.json"
 start=$(date +%s)
 answer=""
@@ -96,7 +103,8 @@ for (( i = 0; i < TIMEOUT * 10; i++ )); do
 		if [[ -r $live ]] && IFS= read -r state < "$live"; then
 			case $state in
 			*'"event":"PostToolUse"'*|*'"event":"PostToolUseFailure"'* \
-			|*'"event":"PostToolBatch"'*|*'"event":"Stop"'*|*'"event":"StopFailure"'*)
+			|*'"event":"PostToolBatch"'*|*'"event":"MessageDisplay"'* \
+			|*'"event":"Stop"'*|*'"event":"StopFailure"'*)
 				ts=${state##*\"ts\":}; ts=${ts%%,*}; ts=${ts%%\}*}
 				if [[ $ts =~ ^[0-9]+$ ]] && (( ts >= start )); then
 					log "GONE answered outside the island after ${i}00ms"
