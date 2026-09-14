@@ -373,12 +373,51 @@ ShellRoot {
     // typed, and building a shell command string out of it would make every
     // decision an injection site. approve.sh needs no nudge -- decisions/ is
     // one of the directories the feed already watches.
-    FileView { id: verdict }
+    //
+    // preload matters more than it looks. It defaults to true, which means
+    // assigning `path` immediately starts a background READ -- of a decision
+    // file that by definition does not exist yet. Every click was therefore a
+    // write racing its own doomed read through one job queue, and the write
+    // lost often enough that Allow worked, then did not, then did. The log
+    // said so from both ends at once: "Read of decisions/<id> failed" from
+    // here, and the hook waiting out its full timeout for a file that was
+    // never written. Nothing in here ever reads, so nothing should load.
+    //
+    // blockWrites finishes the job: the write lands before the click returns,
+    // rather than being queued behind whatever the last decision left running.
+    // One FileView per decision, never reused. A single long-lived one with its
+    // path reassigned per click writes the FIRST decision and silently drops
+    // every one after it: assigning `path` retargets the view asynchronously,
+    // and the setText issued behind it in the same tick goes nowhere. It fails
+    // without a word -- no error, no saved(), just an Allow button that worked
+    // once and then did nothing, and a hook waiting out its timeout for a file
+    // that was never written.
+    //
+    // preload because nothing here ever reads, and the file cannot exist yet
+    // anyway; blockWrites so the write has landed by the time setText returns,
+    // which is what makes it safe to drop the object straight after.
+    Component {
+        id: verdictFile
+        FileView {
+            preload: false
+            blockWrites: true
+        }
+    }
 
     function decide(reqId, answer, reason) {
         const note = (reason || "").replace(/[\r\n]+/g, " ").trim();
-        verdict.path = stateRoot + "/decisions/" + reqId;
-        verdict.setText(answer + "\n" + note + "\n");
+        const f = verdictFile.createObject(root, {
+            path: stateRoot + "/decisions/" + reqId
+        });
+        if (!f) {
+            console.warn("[island] could not open a decision file for", reqId);
+            return;
+        }
+        f.setText(answer + "\n" + note + "\n");
+        // blockWrites means the file is on disk by now. The delay is only so
+        // the object is not torn down inside its own call; a click is rare
+        // enough that five seconds of it costs nothing.
+        f.destroy(5000);
     }
 
     // One long-lived feed, not a poll. state.py --serve watches the state files

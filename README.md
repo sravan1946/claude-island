@@ -255,7 +255,13 @@ Three things about it are deliberate:
 
 - **The decision file is written through `FileView`, not `sh -c`.** The reason is
   free text a person typed; building a shell command string out of it would make
-  every decision an injection site.
+  every decision an injection site. It is a **new `FileView` per decision**, and
+  that is not tidiness: reassigning `path` on one long-lived view retargets it
+  asynchronously, and the `setText` issued behind it in the same tick is dropped
+  without an error, a `saved()`, or any other sign. The first decision of a
+  session writes, every one after it vanishes — an Allow button that works once
+  and then does nothing, and a hook that waits out its full timeout for a file
+  nobody wrote.
 - **Enter does nothing.** With two buttons there is no unambiguous target for it,
   and guessing one is how a keystroke becomes an approval. Escape leaves the box.
 - **Keyboard focus is `OnDemand`, and only while something is asking.** Holding
