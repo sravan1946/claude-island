@@ -77,9 +77,34 @@ jq -nc --arg s "$sid" --arg t "$tool" --arg b "$body" --arg c "$cwd" \
 	'{session_id:$s, tool:$t, body:$b, cwd:$c, ts:$ts}' > "$req" || defer
 
 # The verdict is the first line, an optional reason the second.
+#
+# The island is not the only surface asking: the terminal shows the same prompt
+# the whole time this waits. Answer it there and the tool moves on with nothing
+# to tell this script, which went on blocking for the full five minutes with a
+# dead Allow/Deny sitting on the panel. So the session's own status is watched
+# too -- a tool finishing or a turn ending after this request went up means the
+# answer already happened somewhere else, and the only safe reading of that is
+# to stop waiting. Deferring can never approve anything; it just takes the row
+# off the panel and leaves the terminal to it.
+live="$ROOT/live/$sid.json"
+start=$(date +%s)
 answer=""
 reason=""
 for (( i = 0; i < TIMEOUT * 10; i++ )); do
+	if (( i % 10 == 9 )); then
+		[[ -e $req ]] || { log "GONE request went away"; defer; }
+		if [[ -r $live ]] && IFS= read -r state < "$live"; then
+			case $state in
+			*'"event":"PostToolUse"'*|*'"event":"PostToolUseFailure"'* \
+			|*'"event":"PostToolBatch"'*|*'"event":"Stop"'*|*'"event":"StopFailure"'*)
+				ts=${state##*\"ts\":}; ts=${ts%%,*}; ts=${ts%%\}*}
+				if [[ $ts =~ ^[0-9]+$ ]] && (( ts >= start )); then
+					log "GONE answered outside the island after ${i}00ms"
+					defer
+				fi ;;
+			esac
+		fi
+	fi
 	if [[ -s $dec ]]; then
 		{ IFS= read -r answer; IFS= read -r reason; } < "$dec" 2>/dev/null
 		# A half-written file can present as "allo". Only a complete verdict counts;
