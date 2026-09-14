@@ -411,22 +411,37 @@ ShellRoot {
             // Hover is exclusive: a hoverEnabled MouseArea sits above the
             // hitbox's own, so entering a control inside the panel tells the
             // hitbox the pointer LEFT the bar. Every control that wants hover
-            // therefore claims the surface, and the claims are COUNTED -- the
-            // enter of one and the exit of the other arrive in that order, so a
-            // release that simply restarted the timer collapsed the panel out
-            // from under the cursor a fifth of a second later. Only the last
-            // release standing starts the clock.
-            property int holds: 0
-            function hold() {
-                holds += 1;
+            // therefore claims the surface, and the enter of one arrives before
+            // the exit of the other -- a release that simply restarted the timer
+            // collapsed the panel out from under the cursor a fifth of a second
+            // later. Only the last release standing starts the clock.
+            //
+            // The claims are held BY THE AREA that made them rather than tallied
+            // in an int. A bare count only balances if every claim comes back,
+            // and the panel's areas live on rows the feed rebuilds whenever
+            // anything drawn changes: an area destroyed under the pointer never
+            // sends its exit, so the count went up and never came back down and
+            // the panel stayed open for good. A claim tied to its area can be
+            // handed back on the way out, and anything still holding one can be
+            // asked whether it really still has the pointer.
+            property var claims: []
+            readonly property int holds: claims.length
+            function hold(area) {
+                if (claims.indexOf(area) >= 0)
+                    return;
+                claims = claims.concat([area]);   // a new array, or nothing notifies
                 collapseTimer.stop();
                 win.hovered = true;
             }
-            function release() {
-                holds = Math.max(0, holds - 1);
+            function release(area) {
+                const rest = claims.filter(c => c !== area);
+                if (rest.length === claims.length)
+                    return;
+                claims = rest;
                 // The timer is the grace period for crossing the seam between
-                // two of these areas, where neither is entered for a frame.
-                if (holds === 0)
+                // two of these areas, where neither is entered for a frame --
+                // including the seam a rebuilt row leaves under a still cursor.
+                if (claims.length === 0)
                     collapseTimer.restart();
             }
 
@@ -489,18 +504,44 @@ ShellRoot {
                 height: win.expanded ? panel.targetH + 12 : root.grabH
 
                 MouseArea {
+                    id: barMa
                     anchors.fill: parent
                     hoverEnabled: true
                     acceptedButtons: Qt.NoButton
-                    onEntered: win.hold()
-                    onExited:  win.release()
+                    // containsMouse rather than entered/exited: it is the one
+                    // signal that also goes false when an area is hidden or
+                    // disabled under the pointer, which is how the Allow button
+                    // used to keep a claim it could never give back.
+                    onContainsMouseChanged: containsMouse ? win.hold(barMa) : win.release(barMa)
+                    Component.onDestruction: win.release(barMa)
                 }
             }
 
             Timer {
                 id: collapseTimer
                 interval: 220
-                onTriggered: { win.holds = 0; win.hovered = false; }
+                onTriggered: { win.claims = []; win.hovered = false; win.hint = ""; }
+            }
+
+            // Whatever the areas forget to say, this notices: a claimant that
+            // cannot report the pointer inside itself -- hidden, disabled, or
+            // already destroyed -- is not holding the panel open any more. It
+            // only runs while the panel is up, so it costs nothing at rest.
+            Timer {
+                id: reconcile
+                interval: 400
+                repeat: true
+                running: win.hovered
+                onTriggered: {
+                    const live = win.claims.filter(function (c) {
+                        try { return !!(c && c.containsMouse); } catch (e) { return false; }
+                    });
+                    if (live.length === win.claims.length)
+                        return;
+                    win.claims = live;
+                    if (live.length === 0)
+                        collapseTimer.restart();
+                }
             }
 
             // ---------------------------------------------- collapsed: the meter
@@ -866,19 +907,24 @@ ShellRoot {
                                     hoverEnabled: true
                                     cursorShape: Qt.PointingHandCursor
                                     acceptedButtons: Qt.LeftButton | Qt.RightButton
-                                    onEntered: {
-                                        win.hold();
-                                        win.hint = row.modelData.pid
-                                            ? "Click to focus " + root.tilde(row.modelData.cwd)
-                                            : root.tilde(row.modelData.cwd);
-                                    }
-                                    onExited: {
-                                        win.release();
+                                    onContainsMouseChanged: {
+                                        if (containsMouse) {
+                                            win.hold(rowMa);
+                                            win.hint = row.modelData.pid
+                                                ? "Click to focus " + root.tilde(row.modelData.cwd)
+                                                : root.tilde(row.modelData.cwd);
+                                            return;
+                                        }
+                                        win.release(rowMa);
                                         // Only clear what is still ours: moving to
                                         // the next row sets the new hint first.
                                         if (win.hint.indexOf(root.tilde(row.modelData.cwd)) >= 0)
                                             win.hint = "";
                                     }
+                                    // The feed rebuilds this row out from under the
+                                    // pointer on any change it draws; a destroyed
+                                    // area sends no exit, so give the claim back here.
+                                    Component.onDestruction: win.release(rowMa)
                                     onClicked: function (m) {
                                         if (m.button === Qt.RightButton)
                                             root.settingsOpen = true;
@@ -1118,8 +1164,11 @@ ShellRoot {
                                                     hoverEnabled: true
                                                     cursorShape: Qt.PointingHandCursor
                                                     enabled: row.decided === ""
-                                                    onEntered: win.hold()
-                                                    onExited:  win.release()
+                                                    // Answering disables this area
+                                                    // and then the feed deletes it,
+                                                    // both with the pointer on top.
+                                                    onContainsMouseChanged: containsMouse ? win.hold(bma) : win.release(bma)
+                                                    Component.onDestruction: win.release(bma)
                                                     onClicked: {
                                                         row.decided = modelData.answer;
                                                         root.decide(pend.id, modelData.answer, why.text);
@@ -1211,8 +1260,8 @@ ShellRoot {
                                 anchors { fill: parent; margins: -6 }
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
-                                onEntered: win.hold()
-                                onExited:  win.release()
+                                onContainsMouseChanged: containsMouse ? win.hold(gm) : win.release(gm)
+                                Component.onDestruction: win.release(gm)
                                 onClicked: root.settingsOpen = true
                             }
                         }
