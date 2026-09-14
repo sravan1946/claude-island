@@ -84,15 +84,15 @@ optional things.
 
 ## Click-to-approve
 
-Only engages for sessions in **`default`** or **`plan`** permission mode
-(Shift+Tab cycles). A session in `auto` mode never reaches the island — the hook
-sees the mode and exits in about 3ms, before doing any work.
+Engages for exactly the calls Claude Code was about to ask you about, in any
+permission mode. The grant runs on `PermissionRequest`, which fires only when a
+decision is needed, and it matches no tool name — so an MCP call, a plan
+approval or a notebook edit reaches the panel the same way a `Bash` command
+does. A call that mode or your allow rules already settle never gets there:
+`auto` mode asks about little, so the island shows little.
 
-That is a deliberate trade, and the reason for it is worth reading before you
-rely on this: **[Why the grant runs on PreToolUse](#why-the-grant-runs-on-pretooluse)**.
-The short version is that `PermissionRequest`, the event that exists for exactly
-this job, does not honour its own documented decision in Claude Code 2.1.269, so
-the grant has to happen on an event that fires for every call instead.
+What it cannot answer still says so rather than pretending: see
+**[Two kinds of waiting](#two-kinds-of-waiting)**.
 
 Nothing is ever approved on your behalf. Any error, timeout, bad payload or
 stopped daemon leaves the normal permission flow exactly as it was.
@@ -172,7 +172,7 @@ the hooks.
 | `themes.js`    | the palettes and the config defaults |
 | `state.py`     | session discovery and status; `--serve` streams a JSON line per change |
 | `status.sh`    | status hook: one line per state change, on every transition event |
-| `approve.sh`   | `PreToolUse` hook: writes a request, blocks for the answer |
+| `approve.sh`   | `PermissionRequest` hook: writes a request, blocks for the answer |
 | `session.sh`   | `SessionStart` / `SessionEnd` hook: registers the session |
 | `focus.sh`     | brings a session's terminal to the front, and its tab where it can |
 | `settings.sh`  | opens the settings window from outside — for a keybind |
@@ -204,39 +204,45 @@ work the obvious way.
 
 ## Permissions
 
-### Why the grant runs on PreToolUse
+### Where the grant runs
 
-`PermissionRequest` is the event that exists for exactly this job — it fires only
-when a decision is actually needed. **Claude Code 2.1.269 does not honour its
-decision.** A hook returning the documented
+On `PermissionRequest`, with no matcher. That event fires only when Claude Code
+is about to ask, so the request the panel shows you is a prompt that was going to
+happen either way, and no matcher means every tool that can prompt arrives —
+`mcp__*` calls, `ExitPlanMode`, `NotebookEdit`, whatever a plugin adds next.
+
+It ran on `PreToolUse` for a while, and that was wrong in both directions at
+once. `PreToolUse` fires ahead of **every** tool call, so the island asked about
+greps, reads and allowlisted commands nobody wanted gated; and the registration
+carried a `Bash|Write|Edit|WebFetch` matcher, so every other prompt went to the
+terminal with the panel saying it could not help.
+
+The move to `PreToolUse` was made on a misreading of this event, recorded here
+for a while as a Claude Code bug. It was not one. The decision was returned as
 
 ```json
 {"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":"allow"}}
 ```
 
-runs, returns cleanly, and the tool stays blocked. Reproduced three times,
-including inside a trusted project directory, with the hook confirmed to run.
-Two other signs that build's contract has moved: the payload omits the documented
-`tool_use_id` and carries an undocumented `permission_suggestions` array.
+where `decision` is an **object**, not a string:
 
-`PreToolUse`'s `permissionDecision` does work, verified end to end — a real
-session blocked on the island, answered by a click, and the tool ran.
+```json
+{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}
+```
 
-The cost of the move is that `PreToolUse` fires for **every** tool call rather
-than only the ones needing a decision. So the first thing `approve.sh` does is a
-plain string match on `permission_mode`: anything other than `default` or `plan`
-exits immediately, before `jq`, before touching disk. That is 2.6ms per call and
-covers every session that has not deliberately asked to be prompted. In `default`
-mode the island will be asked about calls Claude Code would have allowed on its
-own — the price of being able to answer any of them at all.
+A string there is silently ignored and the prompt goes to the terminal, which
+looks exactly like an event whose decision is not honoured. Both directions are
+verified end to end on 2.1.270: an allow runs the tool, a deny blocks it and
+`decision.message` reaches Claude verbatim.
 
-If the daemon is not running, blocking here would stall every tool call for the
-full timeout before deferring to the prompt it should have deferred to
-immediately. `state.py --serve` touches `alive` on every scan and `approve.sh`
-defers in 26ms if that heartbeat is stale.
+Two things follow from the shape of the event. It carries no `tool_use_id`, so
+`approve.sh` mints its own id — it only has to be unique and agreed with the
+surface. And `deny` has a `message` field where `allow` has none, so a note typed
+on an allow goes to `approve.log` and no further.
 
-Recheck `PermissionRequest` after a Claude Code upgrade; it is the better event
-if its decision starts being honoured.
+If the daemon is not running, blocking here would stall the prompt for the full
+timeout before deferring to it anyway. `state.py --serve` touches `alive` on
+every scan and `approve.sh` defers in 26ms if that heartbeat is stale.
 
 ### Reasons
 
@@ -269,9 +275,11 @@ as `allo`, and a partial read must mean keep waiting, never guess.
   and the panel shows Allow/Deny. Clicking writes `decisions/<id>` and the hook
   returns it.
 - **A prompt in the terminal.** `Notification` / `permission_prompt` only *tells*
-  us Claude Code is asking — for a tool outside the `PermissionRequest` matcher,
-  say. There is nothing to answer with, so the row says "waiting in terminal" and
-  points you there rather than showing a button-less alert.
+  us Claude Code is asking. Since the grant moved to `PermissionRequest` this is
+  the narrow case it should be: a prompt that event does not cover, such as the
+  network request of a sandboxed command, or a session whose hooks predate the
+  move. There is nothing to answer with, so the row says "waiting in terminal"
+  and points you there rather than showing a button-less alert.
 
 Nothing clears the second kind: if you answer in the terminal, no event fires to
 say so, and the session sat on a dead `waiting` indefinitely. The transcript is

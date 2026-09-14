@@ -103,13 +103,13 @@ def group(command, timeout, matcher=None, status_message=None):
     g["hooks"] = [h]
     return g
 
-# The grant runs on PreToolUse, not PermissionRequest -- see "Why the grant runs
-# on PreToolUse" in the README. approve.sh exits in ~3ms for any session not in
-# default or plan mode, so the per-call cost of being on this event is paid only
-# by sessions that asked to be prompted.
+# The grant runs on PermissionRequest: it fires only when Claude Code is about
+# to ask, so the island is handed the prompts and nothing else. No matcher --
+# every tool that can prompt comes through, MCP calls and plan approvals with
+# the rest. See "Where the grant runs" in the README.
 wanted = collections.defaultdict(list)
-wanted["PreToolUse"].append(
-    group(cmd("approve.sh"), 600, matcher="Bash|Write|Edit|WebFetch",
+wanted["PermissionRequest"].append(
+    group(cmd("approve.sh"), 600,
           status_message="Waiting on the island..."))
 wanted["SessionStart"].append(group(cmd("session.sh", "start"), 10))
 wanted["SessionEnd"].append(group(cmd("session.sh", "end"), 10))
@@ -131,13 +131,15 @@ for ev, groups in wanted.items():
     hooks[ev] = kept + groups
     added += len(groups)
 
-# A previous version registered approve.sh here; its decision is not honoured by
-# Claude Code 2.1.269, so leaving it would just block every prompt for nothing.
-if "PermissionRequest" in hooks:
-    hooks["PermissionRequest"] = [g for g in hooks["PermissionRequest"] if not ours(g)]
-    if not hooks["PermissionRequest"]:
-        del hooks["PermissionRequest"]
-        print("  removed a stale PermissionRequest registration")
+# A previous version registered approve.sh on PreToolUse, which asked about
+# every tool call rather than the ones needing an answer. status.sh still lives
+# on that event, so only the approve group goes.
+if "PreToolUse" in hooks:
+    stale = [g for g in hooks["PreToolUse"]
+             if any("approve.sh" in h.get("command", "") for h in g.get("hooks", []))]
+    if stale:
+        hooks["PreToolUse"] = [g for g in hooks["PreToolUse"] if g not in stale]
+        print("  moved approve.sh off PreToolUse")
 
 path.write_text(json.dumps(cfg, indent=2) + "\n")
 print(f"  {added} hook entries across {len(wanted)} events")
@@ -161,8 +163,8 @@ cat <<DONE
 Done. The bar appears at the bottom of the screen once a Claude Code session is
 open; hover it for detail.
 
-Click-to-approve only engages for sessions in "default" or "plan" permission
-mode (Shift+Tab cycles). Sessions in auto mode are left completely alone.
+Click-to-approve takes over whatever Claude Code was about to ask you about, in
+any permission mode -- a mode that asks for little sends little to the island.
 
 Open sessions pick the hooks up on their own; restart one if it does not.
 DONE

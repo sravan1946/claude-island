@@ -145,24 +145,24 @@ else
 		ok "$n hook entries registered"
 	fi
 
-	jq -e '.hooks.PreToolUse // [] | map(.hooks[].command) | any(contains("approve.sh"))' \
-		"$SETTINGS" >/dev/null 2>&1 \
-		&& ok "click-to-approve wired (PreToolUse)" \
-		|| warn "approve.sh not on PreToolUse" "the bar still works; clicking Allow will not"
-
 	jq -e '.hooks.PermissionRequest // [] | map(.hooks[].command) | any(contains("approve.sh"))' \
 		"$SETTINGS" >/dev/null 2>&1 \
-		&& bad "approve.sh is on PermissionRequest" \
-		       "that event's decision is ignored by Claude Code 2.1.269 -- every prompt
-       would block for nothing. Re-run ./install.sh to move it." \
+		&& ok "click-to-approve wired (PermissionRequest)" \
+		|| warn "approve.sh not on PermissionRequest" "the bar still works; clicking Allow will not"
+
+	jq -e '.hooks.PreToolUse // [] | map(.hooks[].command) | any(contains("approve.sh"))' \
+		"$SETTINGS" >/dev/null 2>&1 \
+		&& bad "approve.sh is still on PreToolUse" \
+		       "that event fires ahead of every tool call, so the island asks about calls
+       Claude Code would never have prompted for. Re-run ./install.sh to move it." \
 		|| true
 
 	mode=$(jq -r '.permissions.defaultMode // "default"' "$SETTINGS")
 	case $mode in
-		default|plan) ok "default permission mode is '$mode' -- clicks will be asked for" ;;
-		*) warn "default permission mode is '$mode'" \
-		        "the island is bypassed in this mode by design. Shift+Tab to 'default'
-       in a session when you want click-to-approve." ;;
+		bypassPermissions) warn "default permission mode is '$mode'" \
+		        "nothing is ever asked in this mode, so nothing reaches the island.
+       Shift+Tab in a session when you want click-to-approve." ;;
+		*) ok "default permission mode is '$mode' -- whatever it asks about lands on the island" ;;
 	esac
 fi
 
