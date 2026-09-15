@@ -486,6 +486,18 @@ FloatingWindow {
                 text: "How long a permission prompt holds the panel open before folding back to the pulsing lane. Hovering cancels the countdown."
             }
 
+            Heading { text: "When you are already there" }
+            Seg {
+                options: [{ label: "Ask on the island too", value: false },
+                          { label: "Leave it to the terminal", value: true }]
+                current: sw.cfg.skipWhenFocused === true
+                onPicked: function (v) { sw.put("skipWhenFocused", v); }
+            }
+            Note {
+                Layout.topMargin: 2
+                text: "A prompt that arrives while you are looking at the session that raised it is already on your screen. The lane still turns warm; the panel stays shut and you answer in the terminal. Only a confident match counts \u2014 when the tab cannot be told apart, the island asks."
+            }
+
             Rule {}
 
             // ---------------------------------------------------------- fonts

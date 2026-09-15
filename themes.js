@@ -17,6 +17,9 @@ var defaults = {
     barHeight:  10,
     panelWidth: 0,          // 0 -> a fraction of the screen it is drawn on
     announceMs: 5000,
+    // A prompt in the window you are already looking at has already been made:
+    // Claude Code's own is in that terminal. approve.sh reads this.
+    skipWhenFocused: true,
     fontSans:   "",         // "" -> the built-in default
     fontMono:   ""
 };

@@ -22,7 +22,9 @@
 # output, which leaves the permission flow exactly as it was -- in a session
 # that can show a prompt, that is the prompt. A broken UI must never approve.
 set -uo pipefail
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/claude-approve"
+CFG="${XDG_CONFIG_HOME:-$HOME/.config}/claude-island/config.json"
 TIMEOUT="${CA_TIMEOUT:-300}"
 defer() { exit 0; }
 
@@ -70,6 +72,29 @@ log() { printf '%s %s %s\n' "$(date +%H:%M:%S.%3N)" "$tuid" "$*" >> "$ROOT/appro
 alive=$(stat -c %Y "$ROOT/alive" 2>/dev/null || echo 0)
 if (( $(date +%s) - alive > 20 )); then
 	log "SKIP island not running (heartbeat ${alive})"
+	defer
+fi
+
+# If the terminal that is asking is the one in front of you, it has already
+# asked. Claude Code's own prompt is sitting in that window, you are looking at
+# that window, and the island's copy of the same question is one more thing to
+# dismiss -- with the panel thrown open over whatever you were reading to do it.
+# Deferring leaves the terminal prompt untouched and unanswered, which is the
+# whole point: you answer it there, where you already are.
+#
+# The lane keeps working. status.sh puts the session on `waiting` from the
+# Notification event either way, so the bar still shows warm for it; what goes
+# away is the panel, the row, and the buttons.
+#
+# focused.sh answers no to everything it cannot establish, and this trusts only
+# a yes, because a wrong yes is a prompt that appears on no surface at all.
+# Not `.skipWhenFocused // true`: jq's alternative operator answers the right
+# side for false as readily as for null, so the one value that turns this off
+# was the one value it could not read. A missing file, a missing key and a
+# broken file all mean the default, which is on.
+if [[ $(jq -r 'if .skipWhenFocused == false then "off" else "on" end' "$CFG" 2>/dev/null || echo on) != off ]] \
+   && "$HERE/focused.sh" $$; then
+	log "SKIP on=$ev tool=$tool -- already focused on the asking session"
 	defer
 fi
 

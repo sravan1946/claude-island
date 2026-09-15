@@ -92,7 +92,9 @@ does. A call that mode or your allow rules already settle never gets there:
 `auto` mode asks about little, so the island shows little.
 
 What it cannot answer still says so rather than pretending: see
-**[Two kinds of waiting](#two-kinds-of-waiting)**.
+**[Two kinds of waiting](#two-kinds-of-waiting)**. What it does not bother
+answering, because you are already sitting in front of the terminal that asked,
+is **[The prompt you are already looking at](#the-prompt-you-are-already-looking-at)**.
 
 Nothing is ever approved on your behalf. Any error, timeout, bad payload or
 stopped daemon leaves the normal permission flow exactly as it was.
@@ -128,6 +130,7 @@ falls back to the default:
   "barHeight": 10,
   "panelWidth": 0,
   "announceMs": 5000,
+  "skipWhenFocused": true,
   "fontSans": "",
   "fontMono": ""
 }
@@ -143,6 +146,7 @@ falls back to the default:
 | `barHeight`  | 10 | height of the collapsed bar |
 | `panelWidth` | 0 | `0` takes a share of each screen, so a wide monitor gets a wider panel |
 | `announceMs` | 5000 | how long a new request holds the panel open |
+| `skipWhenFocused` | `true` | when the asking session's terminal is the window in front of you, leave the prompt to it — see **[The prompt you are already looking at](#the-prompt-you-are-already-looking-at)** |
 | `fontSans` / `fontMono` | built-in | override the two faces |
 
 The rest are environment variables on the service or the hooks:
@@ -156,7 +160,8 @@ The rest are environment variables on the service or the hooks:
 | `CA_FONT_SANS`  | Cantarell | face for titles and prose, when the config does not say |
 | `CA_FONT_MONO`  | JetBrainsMono Nerd Font | face for status, timers, paths |
 | `CA_USAGE_CACHE`| `~/.cache/claude-status/cache.json` | where to read usage limits from |
-| `CA_DEBUG`      | unset | `focus.sh` logs what it walked to `focus.log` |
+| `CA_DEBUG`      | unset | `focus.sh` and `focused.sh` log what they walked to `focus.log` |
+| `CA_FOCUS_PID`  | unset | stands in for the compositor's answer, so `focused.sh` can be tested without a window to focus |
 
 Set them on the service: `systemctl --user edit claude-island.service`, then an
 `[Service]` section with `Environment=CA_IDLE_AFTER=120`. Hook-side knobs
@@ -175,6 +180,7 @@ the hooks.
 | `approve.sh`   | `PermissionRequest` hook: writes a request, blocks for the answer |
 | `session.sh`   | `SessionStart` / `SessionEnd` hook: registers the session |
 | `focus.sh`     | brings a session's terminal to the front, and its tab where it can |
+| `focused.sh`   | the same walk backwards: is the window in front of you this session? |
 | `settings.sh`  | opens the settings window from outside — for a keybind |
 | `install.sh`   | dependency check, service, hook registration |
 | `doctor.sh`    | diagnoses a broken or partial install |
@@ -354,6 +360,49 @@ drive it through escape codes, only something holding the socket path can.
 Without one of those you get the window and not the tab, which is still most of
 the way there. Nothing in stage two can fail loudly: a missing tool or a terminal
 with no control channel costs precision, never the window.
+
+### The prompt you are already looking at
+
+The island exists because a permission prompt is invisible from another
+workspace. It is not invisible when you are reading the terminal it is in — and
+there the panel is worse than nothing: the same question a second time, thrown
+open over whatever you were looking at, with the terminal's own prompt still
+underneath waiting to be answered anyway.
+
+So `approve.sh` asks `focused.sh` first, and on a yes it defers — no request
+file, no row, no buttons, and the terminal prompt untouched. The lane still
+turns warm: `status.sh` puts the session on `waiting` from the `Notification`
+event either way, so the bar keeps saying which session is stopped. Only the
+panel stays shut. Set `"skipWhenFocused": false` to get the panel back.
+
+`focused.sh` is `focus.sh` run backwards, and it inherits the same problem in a
+worse form: **the compositor names a terminal, and a terminal may hold four
+sessions.** Answering at window level would have suppressed the prompt for the
+three tabs you are not looking at — a prompt on no surface at all, which is the
+one outcome worse than being asked twice. So:
+
+1. The compositor names the focused window's pid (`hyprctl activewindow`,
+   `swaymsg`, `niri msg`). If it is not an ancestor of the asking session, the
+   answer is no and nothing else has to be worked out.
+2. kitty, asked over its socket, names the window that is current *within* it,
+   whether or not kitty itself has the focus, and reports the processes running
+   in it. The session is the one you are looking at when those processes meet
+   the ancestors from stage one — no window ids to keep in step on either side.
+3. With no control channel the tab is unknowable, but it only *has* to be known
+   when more than one session sits behind that window. So the session registry
+   settles it: another registered session under the same window makes the
+   answer ambiguous, and ambiguous is no.
+
+Everything it cannot establish answers no — no compositor, no `jq`, a tool that
+errors, a terminal it does not know. That is the direction that costs you a
+redundant prompt rather than a lost one. tmux is deliberately in that bucket:
+the server is not a child of the terminal, so the walk in stage one ends before
+it reaches a window, and a session inside tmux always gets the island.
+
+One jq trap, because it read as working: `.skipWhenFocused // true` answers
+`true` for a stored `false`, since `//` treats `false` and `null` alike. The one
+value that turns the feature off was the only one it could not read. It is
+spelled out as an `if` now.
 
 One Hyprland note, since it cost an hour: **0.56 moved dispatchers to a Lua API**
 and the old spelling now errors out. `focus.sh` tries

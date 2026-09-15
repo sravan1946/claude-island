@@ -81,7 +81,7 @@ esac
 
 # ---- this checkout ----------------------------------------------------------
 head_ "files"
-for f in island.qml Settings.qml themes.js state.py status.sh approve.sh session.sh focus.sh settings.sh; do
+for f in island.qml Settings.qml themes.js state.py status.sh approve.sh session.sh focus.sh focused.sh settings.sh; do
 	if [[ ! -f $HERE/$f ]]; then
 		bad "missing $f"
 	elif [[ $f == *.sh || $f == *.py ]] && [[ ! -x $HERE/$f ]]; then

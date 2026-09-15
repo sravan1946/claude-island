@@ -46,6 +46,17 @@ journal should be silent in normal use.
 - **Hover claims are held by the area that made them**, released on
   `containsMouse` and on destruction. A counter that only balances when every
   exit arrives is how the panel welded itself open.
+- **The compositor names a terminal, not a session.** `focused.sh` decides
+  whether to suppress a prompt, and one kitty window here holds four sessions —
+  a window-level yes would have hidden the prompt for the three tabs you are
+  not in. It matches the focused kitty window's own processes against the
+  session's ancestors, and where there is no control channel it refuses to
+  guess: another registered session behind the same window means no. Every
+  unknown answers no, because being asked twice beats being asked nowhere.
+- **`jq`'s `//` swallows `false`.** `.skipWhenFocused // true` answers `true`
+  for a stored `false` — the alternative operator fires on `false` as well as
+  `null`, so the only value that turns a flag off is the one it cannot read.
+  Spell a boolean out with `if … == false`.
 - **Evidence has to be new.** The hook decides a prompt was answered elsewhere
   by watching `live/<sid>.json`, and the file already holds the *previous*
   tool's completion. Compare against what it said when the request went up, or
